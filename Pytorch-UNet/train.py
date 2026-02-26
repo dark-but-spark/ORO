@@ -297,44 +297,17 @@ def train_model(
                                 pass
 
                         val_score = evaluate(model, val_loader, device, amp)
+                        logging.info(f'Validation Dice score: {val_score}')
+
+                        # Update learning rate based on validation score
                         scheduler.step(val_score)
 
-                        logging.info('Validation Dice score: {}'.format(val_score))
-                        try:
-                            writer.add_scalar('val/dice', val_score, global_step)
-                            writer.add_scalar('val/learning_rate', optimizer.param_groups[0]['lr'], global_step)
-                            # log an example image and masks (first in batch)
-                            try:
-                                img_vis = images[0].cpu()
-                                # images are C,H,W in 0..1
-                                writer.add_image('val/image', img_vis, global_step)
-                            except Exception:
-                                pass
-                            try:
-                                # true_masks may be long or float
-                                if true_masks.dim() == 3:
-                                    # (C,H,W) -> grid
-                                    writer.add_image('val/mask_true_channels', true_masks[0].cpu(), global_step)
-                                else:
-                                    writer.add_image('val/mask_true', true_masks[0].unsqueeze(0).float().cpu(), global_step)
-                            except Exception:
-                                pass
-                            try:
-                                pred = masks_pred.argmax(dim=1)[0].float().cpu()
-                                writer.add_image('val/mask_pred', pred.unsqueeze(0), global_step)
-                            except Exception:
-                                pass
-                            # log histograms
-                            for tag, value in model.named_parameters():
-                                tag = tag.replace('/', '.')
-                                try:
-                                    writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                                    if value.grad is not None:
-                                        writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                        # Save checkpoint after each epoch
+                        if save_checkpoint:
+                            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+                            state_dict = model.state_dict()
+                            torch.save(state_dict, str(dir_checkpoint / f'checkpoint_epoch{epoch}.pth'))
+                            logging.info(f'Checkpoint {epoch} saved!')
 
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
