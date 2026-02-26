@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TB Scalars Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .chart { width: 100%; max-width: 900px; margin-bottom: 40px; }
+    .tag { margin-bottom: 8px; font-weight: bold; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <h2>TensorBoard Scalars Dashboard</h2>
+  <div id="content">Loading...</div>
+
+  <script>
+    async function fetchData(){
+      const res = await fetch('/data');
+      return res.json();
+    }
+
+    function renderScalars(scalars){
+      const content = document.getElementById('content');
+      content.innerHTML = '';
+      if (!scalars || Object.keys(scalars).length===0){
+        content.innerHTML = '<p>No scalar tags found in event files.</p>';
+        return;
+      }
+      for (const tag of Object.keys(scalars)){
+        const data = scalars[tag];
+        const container = document.createElement('div');
+        const title = document.createElement('div');
+        title.className = 'tag';
+        title.textContent = tag;
+        const canvas = document.createElement('canvas');
+        canvas.className = 'chart';
+        container.appendChild(title);
+        container.appendChild(canvas);
+        content.appendChild(container);
+
+        const labels = data.map(d => d.step);
+        const values = data.map(d => d.value);
+        new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: tag,
+              data: values,
+              borderColor: 'rgba(75,192,192,1)',
+              backgroundColor: 'rgba(75,192,192,0.1)',
+              tension: 0.2,
+              pointRadius: 0
+            }]
+          },
+          options: {
+            scales: {
+              x: { title: { display: true, text: 'step' } },
+              y: { title: { display: true, text: 'value' } }
+            }
+          }
+        });
+      }
+    }
+
+    (async()=>{
+      const json = await fetchData();
+      if (!json.ok){
+        document.getElementById('content').innerHTML = '<p>Error: '+json.error+'</p>';
+        return;
+      }
+      renderScalars(json.scalars);
+    })();
+  </script>
+</body>
+</html>
