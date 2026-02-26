@@ -187,7 +187,7 @@ def train_model(
     optimizer = optim.RMSprop(model.parameters(),
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
-    grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    grad_scaler = torch.amp.GradScaler(enabled=amp)
     # If using multi-channel binary masks (mask_channels provided), use BCEWithLogitsLoss
     if mask_channels and mask_channels > 1:
         criterion = nn.BCEWithLogitsLoss()
