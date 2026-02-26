@@ -185,8 +185,8 @@ def train_model(
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+                              lr=1e-6, weight_decay=weight_decay, momentum=momentum, foreach=True)  # Lowered learning rate
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10)  # Increased patience for scheduler
     grad_scaler = torch.amp.GradScaler(enabled=amp)
     # If using multi-channel binary masks (mask_channels provided), use BCEWithLogitsLoss
     if mask_channels and mask_channels > 1:
@@ -264,11 +264,12 @@ def train_model(
                 # If loss is non-finite (NaN/Inf) skip backward/update to avoid corrupting weights
                 if not torch.isfinite(loss):
                     logging.warning(f'Non-finite loss detected at step {global_step}. Skipping backward/update.')
+                    logging.warning(f'Loss value: {loss.item()}')  # Log the loss value
                 else:
                     # Correct usage of AMP for backward pass
                     grad_scaler.scale(loss).backward()
                     grad_scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)  # Increased gradient clipping value
                     grad_scaler.step(optimizer)
                     grad_scaler.update()
 

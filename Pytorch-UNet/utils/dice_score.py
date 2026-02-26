@@ -1,5 +1,6 @@
 import torch
 from torch import Tensor
+import logging
 
 
 def dice_coeff(input: Tensor, target: Tensor, reduce_batch_first: bool = False, epsilon: float = 1e-6):
@@ -25,4 +26,7 @@ def multiclass_dice_coeff(input: Tensor, target: Tensor, reduce_batch_first: boo
 def dice_loss(input: Tensor, target: Tensor, multiclass: bool = False):
     # Dice loss (objective to minimize) between 0 and 1
     fn = multiclass_dice_coeff if multiclass else dice_coeff
-    return 1 - fn(input, target, reduce_batch_first=True)
+    loss = 1 - fn(input, target, reduce_batch_first=True)
+    if not (0 <= loss <= 1):
+        logging.warning(f"Dice loss out of expected range: {loss}")
+    return loss
