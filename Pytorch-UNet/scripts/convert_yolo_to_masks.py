@@ -181,7 +181,7 @@ def convert_one(label_path, images_dir, output_dir, multiclass=False, overwrite=
             if cls not in class_masks:
                 class_masks[cls] = Image.new('L', (W, H), 0)
             draw = ImageDraw.Draw(class_masks[cls])
-            draw.rectangle([x1, y1, x2, y2], fill=255)
+            draw.rectangle([x1, y1, x2, y2], fill=1)
 
         out_paths = []
         # check existence first
