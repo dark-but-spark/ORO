@@ -280,53 +280,46 @@ def train_model(
                     pass
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
-                # Evaluation round
-                division_step = (n_train // (5 * batch_size))
-                if division_step > 0:
-                    if global_step % division_step == 0:
-                        histograms = {}
-                        for tag, value in model.named_parameters():
-                            tag = tag.replace('/', '.')
-                            try:
-                                if wandb is not None:
-                                    if not (torch.isinf(value) | torch.isnan(value)).any():
-                                        histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-                                    if value.grad is not None and not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                                        histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
-                            except Exception:
-                                pass
+        # Perform validation after each epoch
+        val_score = evaluate(model, val_loader, device, amp)
+        logging.info(f'Validation Dice score: {val_score}')
 
-                        val_score = evaluate(model, val_loader, device, amp)
-                        logging.info(f'Validation Dice score: {val_score}')
+        # Update learning rate based on validation score
+        scheduler.step(val_score)
 
-                        # Update learning rate based on validation score
-                        scheduler.step(val_score)
-
-                        # Save checkpoint after each epoch
-                        if save_checkpoint:
-                            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-                            state_dict = model.state_dict()
-                            torch.save(state_dict, str(dir_checkpoint / f'checkpoint_epoch{epoch}.pth'))
-                            logging.info(f'Checkpoint {epoch} saved!')
-
+        # Save checkpoint after each epoch
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
-            # save detected mask channels if available
+            # Save detected mask channels if available
             mask_ch = None
             if hasattr(dataset, 'mask_channels') and dataset.mask_channels is not None:
                 mask_ch = int(dataset.mask_channels)
             elif mask_channels is not None:
                 mask_ch = int(mask_channels)
             state_dict['mask_channels'] = mask_ch
-            torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+            torch.save(state_dict, str(dir_checkpoint / f'checkpoint_epoch{epoch}.pth'))
             logging.info(f'Checkpoint {epoch} saved!')
-        # flush writer periodically
-        try:
-            writer.flush()
-        except Exception:
-            pass
+
+    if save_checkpoint:
+        Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+        state_dict = model.state_dict()
+        state_dict['mask_values'] = dataset.mask_values
+        # save detected mask channels if available
+        mask_ch = None
+        if hasattr(dataset, 'mask_channels') and dataset.mask_channels is not None:
+            mask_ch = int(dataset.mask_channels)
+        elif mask_channels is not None:
+            mask_ch = int(mask_channels)
+        state_dict['mask_channels'] = mask_ch
+        torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+        logging.info(f'Checkpoint {epoch} saved!')
+    # flush writer periodically
+    try:
+        writer.flush()
+    except Exception:
+        pass
 
 
 def get_args():
