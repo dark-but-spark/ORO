@@ -14,6 +14,9 @@ from torch import optim
 from torch.utils.data import DataLoader, random_split, Subset
 from tqdm import tqdm
 
+import wandb
+import numpy as np
+
 from torch.utils.tensorboard import SummaryWriter
 from evaluate import evaluate
 from unet import UNet
@@ -248,6 +251,8 @@ def train_model(
                             loss = criterion(masks_pred.squeeze(1), true_masks.float())
                             loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
                         else:
+                            # Ensure true_masks is Long for CrossEntropyLoss
+                            true_masks = true_masks.to(device=device, dtype=torch.long)
                             loss = criterion(masks_pred, true_masks)
                             loss += dice_loss(
                                 F.softmax(masks_pred, dim=1).float(),
