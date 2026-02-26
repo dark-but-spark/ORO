@@ -266,8 +266,11 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            subset_ratio=args.subset,
-            mask_channels=args.mask_channels
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            save_checkpoint=True
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
