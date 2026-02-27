@@ -19,20 +19,25 @@ def evaluate(net, dataloader, device, amp):
             # Move images and labels to correct device and type
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             
-            # Handle mask format consistently with training
+            # Handle mask format - Optimal approach matching training
             if net.n_classes == 1:
                 # Binary case
                 mask_true = mask_true.to(device=device, dtype=torch.float32)
                 if mask_true.max() > 1.0:
                     mask_true = mask_true / 255.0
-            elif hasattr(dataloader.dataset, 'mask_channels') and dataloader.dataset.mask_channels:
-                # Multi-channel binary case
-                mask_true = mask_true.to(device=device, dtype=torch.float32)
-                if mask_true.max() > 1.0:
-                    mask_true = mask_true / 255.0
             else:
-                # Multi-class with indices
-                mask_true = mask_true.to(device=device, dtype=torch.long)
+                # Multi-channel case - Check for explicit mask channels parameter first
+                dataset = dataloader.dataset
+                mask_channels_from_dataset = getattr(dataset, 'mask_channels', None)
+                
+                if mask_channels_from_dataset and mask_channels_from_dataset > 1:
+                    # Multi-channel binary case (OPTIMAL FOR 4-CHANNEL)
+                    mask_true = mask_true.to(device=device, dtype=torch.float32)
+                    if mask_true.max() > 1.0:
+                        mask_true = mask_true / 255.0
+                else:
+                    # Traditional multi-class with indices
+                    mask_true = mask_true.to(device=device, dtype=torch.long)
 
             with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                 mask_pred = net(image)
@@ -42,13 +47,12 @@ def evaluate(net, dataloader, device, amp):
                     mask_pred = torch.sigmoid(mask_pred)
                     dice_score += dice_coeff(mask_pred.squeeze(1), mask_true.float(), reduce_batch_first=False)
                 elif hasattr(dataloader.dataset, 'mask_channels') and dataloader.dataset.mask_channels:
-                    # Multi-channel binary segmentation
+                    # Multi-channel binary segmentation (OPTIMAL FOR YOUR CASE)
                     mask_pred = torch.sigmoid(mask_pred)
                     dice_score += multiclass_dice_coeff(mask_pred, mask_true.float(), reduce_batch_first=False)
                 else:
-                    # Multi-class segmentation
+                    # Traditional multi-class segmentation
                     mask_pred = F.softmax(mask_pred, dim=1)
-                    # Convert indices to one-hot for dice calculation
                     mask_true_onehot = F.one_hot(mask_true.squeeze(1), net.n_classes).permute(0, 3, 1, 2).float()
                     dice_score += multiclass_dice_coeff(mask_pred, mask_true_onehot, reduce_batch_first=False)
 

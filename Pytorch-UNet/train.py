@@ -196,19 +196,19 @@ def train_model(
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     
-    # Improved loss function selection logic
+    # Improved loss function selection logic - Optimal approach
     if model.n_classes == 1:
         # Binary segmentation case
         criterion = nn.BCEWithLogitsLoss()
         logging.info("Using BCEWithLogitsLoss for binary segmentation")
     elif mask_channels and mask_channels > 1:
-        # Multi-channel binary masks (including 4-channel case)
+        # Multi-channel binary masks (including 4-channel case) - PRIMARY CASE FOR YOUR DATA
         criterion = nn.BCEWithLogitsLoss()
         logging.info(f"Using BCEWithLogitsLoss for multi-channel binary segmentation ({mask_channels} channels)")
     else:
-        # Multi-class segmentation with class indices
+        # Traditional multi-class segmentation with class indices (rarely used in practice)
         criterion = nn.CrossEntropyLoss()
-        logging.info(f"Using CrossEntropyLoss for multi-class segmentation ({model.n_classes} classes)")
+        logging.info(f"Using CrossEntropyLoss for traditional multi-class segmentation ({model.n_classes} classes)")
     
     global_step = 0
 
@@ -227,22 +227,24 @@ def train_model(
 
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 
-                # Handle mask according to format (consistent with evaluate.py)
+                # Handle mask according to format - Simplified and robust approach
                 if model.n_classes == 1:
                     # Binary case
                     true_masks = true_masks.to(device=device, dtype=torch.float32)
                     # Normalize if needed
                     if true_masks.max() > 1.0:
                         true_masks = true_masks / 255.0
-                elif mask_channels and mask_channels > 1:
-                    # Multi-channel binary masks (including 4-channel case)
-                    true_masks = true_masks.to(device=device, dtype=torch.float32)
-                    # Normalize if needed
-                    if true_masks.max() > 1.0:
-                        true_masks = true_masks / 255.0
                 else:
-                    # Class indices format for CrossEntropyLoss
-                    true_masks = true_masks.to(device=device, dtype=torch.long)
+                    # Multi-channel case (both binary and traditional multi-class)
+                    # Check if we have explicit mask channels parameter
+                    if mask_channels and mask_channels > 1:
+                        # Multi-channel binary masks (your 4-channel case)
+                        true_masks = true_masks.to(device=device, dtype=torch.float32)
+                        if true_masks.max() > 1.0:
+                            true_masks = true_masks / 255.0
+                    else:
+                        # Traditional multi-class with indices
+                        true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
@@ -252,13 +254,12 @@ def train_model(
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
                     elif mask_channels and mask_channels > 1:
-                        # Multi-channel binary segmentation (including 4-channel case)
+                        # Multi-channel binary segmentation (OPTIMAL FOR YOUR 4-CHANNEL CASE)
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(F.sigmoid(masks_pred).float(), true_masks.float(), multiclass=True)
                     else:
-                        # Multi-class segmentation with indices - ensure proper format
-                        # CrossEntropyLoss expects: predictions (N, C, H, W), targets (N, H, W) as class indices
-                        loss = criterion(masks_pred, true_masks.squeeze(1))  # Remove channel dimension if present
+                        # Traditional multi-class segmentation with indices
+                        loss = criterion(masks_pred, true_masks.squeeze(1))
                         loss += dice_loss(
                             F.softmax(masks_pred, dim=1).float(),
                             F.one_hot(true_masks.squeeze(1), model.n_classes).permute(0, 3, 1, 2).float(),
