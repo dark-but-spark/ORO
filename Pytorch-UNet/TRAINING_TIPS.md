@@ -21,6 +21,22 @@
 - 批次大小不合适
 - 数据增强策略不当
 
+## 自动化诊断工具
+
+### 全面诊断脚本
+```bash
+# 运行完整诊断套件（推荐）
+chmod +x comprehensive_diagnostics.sh
+./comprehensive_diagnostics.sh
+```
+
+### 快速诊断脚本
+```bash
+# 运行核心测试（快速）
+chmod +x quick_diagnostics.sh  
+./quick_diagnostics.sh
+```
+
 ## 推荐的调试流程
 
 ### 第一步：运行调试脚本
