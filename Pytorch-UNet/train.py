@@ -309,6 +309,9 @@ def train_model(
                     pass
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
+        # Track best model performance
+        best_score = 0.0
+        
         # Perform validation after each epoch
         val_score = evaluate(model, val_loader, device, amp)
         logging.info(f'Validation Dice score: {val_score}')
@@ -316,7 +319,36 @@ def train_model(
         # Update learning rate based on validation score
         scheduler.step(val_score)
 
-        # Save checkpoint after each epoch
+        # Save best model checkpoint with parameter information
+        if val_score > best_score:
+            best_score = val_score
+            logging.info(f'New best Dice score: {best_score:.4f}. Saving checkpoint...')
+            if save_checkpoint:
+                Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+                state_dict = model.state_dict()
+                state_dict['mask_values'] = dataset.mask_values
+                # Save detected mask channels if available
+                mask_ch = None
+                if hasattr(dataset, 'mask_channels') and dataset.mask_channels is not None:
+                    mask_ch = int(dataset.mask_channels)
+                elif mask_channels is not None:
+                    mask_ch = int(mask_channels)
+                state_dict['mask_channels'] = mask_ch
+                
+                # Create descriptive best model filename with key parameters
+                param_info = f"ep{epoch}_bs{batch_size}_lr{learning_rate:.1e}_scale{img_scale}"
+                if mask_ch:
+                    param_info += f"_ch{mask_ch}"
+                if amp:
+                    param_info += "_amp"
+                if model.n_classes > 1:
+                    param_info += f"_cls{model.n_classes}"
+                    
+                best_filename = f'best_model_{param_info}_dice{val_score:.4f}.pth'
+                torch.save(state_dict, str(dir_checkpoint / best_filename))
+                logging.info(f'Best model saved as: {best_filename}')
+
+        # Save checkpoint after each epoch with parameter information
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
@@ -328,9 +360,21 @@ def train_model(
             elif mask_channels is not None:
                 mask_ch = int(mask_channels)
             state_dict['mask_channels'] = mask_ch
-            torch.save(state_dict, str(dir_checkpoint / f'checkpoint_epoch{epoch}.pth'))
-            logging.info(f'Checkpoint {epoch} saved!')
+            
+            # Create descriptive checkpoint filename with key parameters
+            param_info = f"ep{epoch}_bs{batch_size}_lr{learning_rate:.1e}_scale{img_scale}"
+            if mask_ch:
+                param_info += f"_ch{mask_ch}"
+            if amp:
+                param_info += "_amp"
+            if model.n_classes > 1:
+                param_info += f"_cls{model.n_classes}"
+                
+            checkpoint_filename = f'checkpoint_{param_info}_epoch{epoch}.pth'
+            torch.save(state_dict, str(dir_checkpoint / checkpoint_filename))
+            logging.info(f'Checkpoint {epoch} saved as: {checkpoint_filename}')
 
+    # Save final checkpoint with parameter information
     if save_checkpoint:
         Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
         state_dict = model.state_dict()
@@ -342,8 +386,20 @@ def train_model(
         elif mask_channels is not None:
             mask_ch = int(mask_channels)
         state_dict['mask_channels'] = mask_ch
-        torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
-        logging.info(f'Checkpoint {epoch} saved!')
+        
+        # Create descriptive checkpoint filename with key parameters
+        param_info = f"ep{epochs}_bs{batch_size}_lr{learning_rate:.1e}_scale{img_scale}"
+        if mask_ch:
+            param_info += f"_ch{mask_ch}"
+        if amp:
+            param_info += "_amp"
+        if model.n_classes > 1:
+            param_info += f"_cls{model.n_classes}"
+            
+        final_checkpoint_filename = f'final_checkpoint_{param_info}_epoch{epochs}.pth'
+        torch.save(state_dict, str(dir_checkpoint / final_checkpoint_filename))
+        logging.info(f'Final checkpoint saved as: {final_checkpoint_filename}')
+    
     # flush writer periodically
     try:
         writer.flush()
