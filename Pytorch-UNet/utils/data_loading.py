@@ -282,13 +282,15 @@ class BasicDataset(Dataset):
         def _size_of(x):
             if isinstance(x, np.ndarray):
                 if x.ndim == 2:
-                    return (x.shape[1], x.shape[0])
+                    return (x.shape[1], x.shape[0])  # (width, height)
                 elif x.ndim == 3:
-                    # could be (C,H,W) or (H,W,C)
-                    if x.shape[0] <= 8 and x.shape[0] > 1:
-                        return (x.shape[2], x.shape[1])
-                    else:
-                        return (x.shape[1], x.shape[0])
+                    # Handle cases like (1, H, W) or (C, H, W) or (H, W, C)
+                    if x.shape[0] == 1:  # Single channel case (1, H, W)
+                        return (x.shape[2], x.shape[1])  # (width, height)
+                    elif x.shape[0] <= 8 and x.shape[0] > 1:  # Multi-channel case (C, H, W)
+                        return (x.shape[2], x.shape[1])  # (width, height)
+                    else:  # Likely (H, W, C) format
+                        return (x.shape[1], x.shape[0])  # (width, height)
                 else:
                     return (x.shape[1], x.shape[0])
             else:
@@ -315,3 +317,94 @@ class BasicDataset(Dataset):
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1):
         super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+
+
+def preprocess_mask(pil_img, scale, n_classes, is_4channel=False):
+    w, h = pil_img.size
+    newW, newH = int(scale * w), int(scale * h)
+    assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+    
+    # 调整大小
+    pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST)
+    
+    # 转换为numpy数组
+    img_ndarray = np.asarray(pil_img)
+    
+    # 根据数据类型正确处理
+    if is_4channel:
+        # 4通道处理
+        if img_ndarray.ndim == 3 and img_ndarray.shape[2] == 4:
+            # RGBA格式，转换为 (C,H,W)
+            mask = img_ndarray.transpose((2, 0, 1)).astype(np.float32)
+        elif img_ndarray.ndim == 3 and img_ndarray.shape[0] == 4:
+            # 已经是 (C,H,W) 格式
+            mask = img_ndarray.astype(np.float32)
+        else:
+            # 其他情况，扩展为4通道
+            if img_ndarray.ndim == 2:
+                mask = np.stack([img_ndarray] * 4, axis=0).astype(np.float32)
+            else:
+                mask = img_ndarray.astype(np.float32)
+    else:
+        # 单通道处理
+        if img_ndarray.ndim == 3:
+            # 处理可能的包装维度
+            if img_ndarray.shape[0] == 1:
+                # (1,H,W) -> (H,W)
+                mask = img_ndarray.squeeze(0)
+            elif img_ndarray.shape[2] == 1:
+                # (H,W,1) -> (H,W)
+                mask = img_ndarray.squeeze(2)
+            else:
+                # 真正的多通道数据
+                mask = img_ndarray
+        else:
+            # 2D数组
+            mask = img_ndarray
+            
+        # 确保是float32类型
+        mask = mask.astype(np.float32)
+    
+    return mask
+
+
+def load_mask_from_npz(npz_path, is_4channel=False):
+    """从NPZ文件加载mask数据"""
+    try:
+        data = np.load(npz_path)
+        # 尝试不同的键名
+        possible_keys = ['masks', 'mask', 'data', 'labels']
+        mask_data = None
+        
+        for key in possible_keys:
+            if key in data:
+                mask_data = data[key]
+                break
+        
+        if mask_data is None:
+            # 如果没有找到标准键，使用第一个键
+            first_key = list(data.keys())[0]
+            mask_data = data[first_key]
+        
+        # 处理不同形状
+        if mask_data.ndim == 2:
+            # 2D数组，直接返回
+            return mask_data
+        elif mask_data.ndim == 3:
+            if is_4channel:
+                # 4通道数据，保持3D
+                return mask_data
+            else:
+                # 单通道但被包装成3D，需要squeeze
+                if mask_data.shape[0] == 1:
+                    return mask_data.squeeze(0)  # (1,H,W) -> (H,W)
+                elif mask_data.shape[2] == 1:
+                    return mask_data.squeeze(2)  # (H,W,1) -> (H,W)
+                else:
+                    # 真正的多通道数据
+                    return mask_data
+        else:
+            raise ValueError(f"Unsupported mask dimension: {mask_data.ndim}")
+            
+    except Exception as e:
+        raise ValueError(f"Error loading NPZ mask {npz_path}: {e}")

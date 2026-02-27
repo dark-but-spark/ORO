@@ -129,6 +129,13 @@ def train_model(
         img_shape = tuple(img_sample.shape) if hasattr(img_sample, 'shape') else None
         mask_shape = tuple(mask_sample.shape) if hasattr(mask_sample, 'shape') else None
         logging.info(f'Sample loaded: image shape={img_shape}, mask shape={mask_shape}')
+        
+        # Additional debug info
+        if hasattr(mask_sample, 'min') and hasattr(mask_sample, 'max'):
+            logging.info(f'Mask value range: [{mask_sample.min()}, {mask_sample.max()}]')
+        elif isinstance(mask_sample, torch.Tensor):
+            logging.info(f'Mask value range: [{mask_sample.min().item()}, {mask_sample.max().item()}]')
+            
     except Exception as e:
         logging.warning(f'Could not load sample for quick check: {e}')
 
@@ -186,13 +193,23 @@ def train_model(
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(model.parameters(),
                               lr=1e-6, weight_decay=weight_decay, momentum=momentum, foreach=True)  # Lowered learning rate
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10)  # Increased patience for scheduler
-    grad_scaler = torch.amp.GradScaler(enabled=amp)
-    # If using multi-channel binary masks (mask_channels provided), use BCEWithLogitsLoss
-    if mask_channels and mask_channels > 1:
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    
+    # Improved loss function selection logic
+    if model.n_classes == 1:
+        # Binary segmentation case
         criterion = nn.BCEWithLogitsLoss()
+        logging.info("Using BCEWithLogitsLoss for binary segmentation")
+    elif mask_channels and mask_channels > 1:
+        # Multi-channel binary masks
+        criterion = nn.BCEWithLogitsLoss()
+        logging.info(f"Using BCEWithLogitsLoss for multi-channel binary segmentation ({mask_channels} channels)")
     else:
-        criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+        # Multi-class segmentation with class indices
+        criterion = nn.CrossEntropyLoss()
+        logging.info(f"Using CrossEntropyLoss for multi-class segmentation ({model.n_classes} classes)")
+    
     global_step = 0
 
     # 5. Begin training
@@ -209,56 +226,43 @@ def train_model(
                     'the images are loaded correctly.'
 
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                # If multi-channel binary masks, `mask` is float (C,H,W). Otherwise long class indices.
-                if mask_channels and mask_channels > 1:
+                
+                # Handle mask according to format (consistent with evaluate.py)
+                if model.n_classes == 1:
+                    # Binary case
                     true_masks = true_masks.to(device=device, dtype=torch.float32)
-                    # normalize masks: some datasets store masks as 0/255; convert to 0/1
-                    try:
-                        if true_masks.max() > 1:
-                            true_masks = (true_masks > 1).float()
-                            logging.debug('Normalized multi-channel masks from [0,255] to [0,1]')
-                    except Exception:
-                        pass
+                    # Normalize if needed
+                    if true_masks.max() > 1.0:
+                        true_masks = true_masks / 255.0
+                elif mask_channels and mask_channels > 1:
+                    # Multi-channel binary masks
+                    true_masks = true_masks.to(device=device, dtype=torch.float32)
+                    # Normalize if needed
+                    if true_masks.max() > 1.0:
+                        true_masks = true_masks / 255.0
                 else:
-                    # expected class indices or single-channel binary masks
-                    # if model expects a single output (n_classes==1) treat masks as binary floats
-                    if model.n_classes == 1:
-                        true_masks = true_masks.to(device=device, dtype=torch.float32)
-                        try:
-                            if true_masks.max() > 1:
-                                true_masks = (true_masks > 1).float()
-                                logging.debug('Normalized single-channel masks from [0,255] to [0,1]')
-                        except Exception:
-                            pass
-                    else:
-                        true_masks = true_masks.to(device=device, dtype=torch.long)
-                        # If indices exceed expected classes, try to recover binary 0/1 mapping
-                        try:
-                            if true_masks.max() >= model.n_classes:
-                                logging.debug('Mask indices exceed n_classes; thresholding to binary indices')
-                                true_masks = (true_masks > 1).long()
-                        except Exception:
-                            pass
+                    # Class indices format
+                    true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
-                    if mask_channels and mask_channels > 1:
-                        # multi-channel binary: BCE per channel + multiclass dice over channels
+                    
+                    if model.n_classes == 1:
+                        # Binary segmentation
+                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                    elif mask_channels and mask_channels > 1:
+                        # Multi-channel binary segmentation
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(F.sigmoid(masks_pred).float(), true_masks.float(), multiclass=True)
                     else:
-                        if model.n_classes == 1:
-                            loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                            loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                        else:
-                            # Ensure true_masks is Long for CrossEntropyLoss
-                            true_masks = true_masks.to(device=device, dtype=torch.long)
-                            loss = criterion(masks_pred, true_masks)
-                            loss += dice_loss(
-                                F.softmax(masks_pred, dim=1).float(),
-                                F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
-                                multiclass=True
-                            )
+                        # Multi-class segmentation with indices
+                        loss = criterion(masks_pred, true_masks)
+                        loss += dice_loss(
+                            F.softmax(masks_pred, dim=1).float(),
+                            F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
+                            multiclass=True
+                        )
 
                 optimizer.zero_grad(set_to_none=True)
                 # If loss is non-finite (NaN/Inf) skip backward/update to avoid corrupting weights
@@ -272,6 +276,29 @@ def train_model(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)  # Increased gradient clipping value
                     grad_scaler.step(optimizer)
                     grad_scaler.update()
+
+                # Log first batch for debugging
+                if global_step == 0:
+                    logging.info(f"First batch - Image shape: {images.shape}, Mask shape: {true_masks.shape}")
+                    logging.info(f"Mask value range: [{true_masks.min().item():.3f}, {true_masks.max().item():.3f}]")
+                    logging.info(f"Pred value range: [{masks_pred.min().item():.3f}, {masks_pred.max().item():.3f}]")
+                    
+                    # Save sample predictions for inspection
+                    try:
+                        import torchvision.utils
+                        torchvision.utils.save_image(images[0], 'sample_input.png')
+                        if model.n_classes == 1:
+                            torchvision.utils.save_image(true_masks[0].unsqueeze(0), 'sample_mask_true.png')
+                            torchvision.utils.save_image(torch.sigmoid(masks_pred[0]).unsqueeze(0), 'sample_mask_pred.png')
+                        else:
+                            # For multi-class, save argmax
+                            pred_argmax = masks_pred[0].argmax(dim=0).float() / (model.n_classes - 1)
+                            true_argmax = true_masks[0].float() / (model.n_classes - 1) if true_masks.dtype == torch.long else true_masks[0][0]
+                            torchvision.utils.save_image(pred_argmax.unsqueeze(0), 'sample_mask_pred.png')
+                            torchvision.utils.save_image(true_argmax.unsqueeze(0), 'sample_mask_true.png')
+                        logging.info("Saved sample images for debugging")
+                    except Exception as e:
+                        logging.warning(f"Could not save sample images: {e}")
 
                 pbar.update(images.shape[0])
                 global_step += 1
