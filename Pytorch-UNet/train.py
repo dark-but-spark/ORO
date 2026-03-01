@@ -120,6 +120,13 @@ def train_model(
             dataset.mask_channels = orig_dataset.mask_channels
         logging.info(f'Using subset of dataset: {subset_len}/{total} samples ({subset_ratio*100:.2f}%)')
 
+    # Debugging: Log subset mask dimensions
+    for idx in indices[:5]:  # Check the first 5 indices
+        sample = orig_dataset[idx]
+        mask_sample = sample['mask']
+        mask_shape = tuple(mask_sample.shape) if hasattr(mask_sample, 'shape') else None
+        logging.info(f'Subset mask shape for index {idx}: {mask_shape}')
+
     # Quick sample check: load first sample and print shapes to confirm pipeline
     try:
         sample = dataset[0]

@@ -1,3 +1,5 @@
+import numpy as np  # 确保在文件顶部导入 numpy
+
 def analyze_and_fix_masks():
     """分析并修复mask数据处理"""
     print("=== Mask数据分析与修复建议 ===\n")
@@ -14,10 +16,16 @@ def analyze_and_fix_masks():
     
     print("文件类型统计:")
     for npz_file in npz_files:
-        if '_4ch' in str(npz_file):
-            four_channel += 1
-        else:
-            single_channel += 1
+        data = np.load(npz_file)
+        print(f"  {npz_file.name}:")
+        print(f"    available keys: {data.files}")  # 打印所有键名
+        for key in data.files:
+            arr = data[key]
+            print(f"    {key}: shape {arr.shape}")
+            if '_4ch' in str(npz_file):
+                four_channel += 1
+            else:
+                single_channel += 1
     
     for png_file in png_files:
         if '_4ch' in str(png_file):
@@ -34,7 +42,6 @@ def analyze_and_fix_masks():
     ch4_npz = list(mask_dir.glob('*_4ch.npz'))[:2]
     for file in ch4_npz:
         try:
-            import numpy as np
             data = np.load(file)
             for key in data.keys():
                 arr = data[key]
