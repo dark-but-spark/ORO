@@ -3,6 +3,12 @@
 # MultiResUNet Training Script with Logging and Backup
 # This script trains MultiResUNet and saves all outputs with timestamps
 
+# Activate the Python environment
+source /share/home/zjm/anaconda3/bin/activate zjm
+
+# Navigate to the project directory
+cd /share/home/zjm/ORO/Pytorch-UNet
+
 set -e  # Exit on error
 
 # Configuration
