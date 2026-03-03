@@ -236,15 +236,27 @@ class MultiResUnet(torch.nn.Module):
 
 def dice_coef(y_true, y_pred):
     smooth = 1e-6  # To avoid division by zero
-    intersection = (y_true * y_pred).sum()
-    union = y_true.sum() + y_pred.sum()
-    return (2. * intersection + smooth) / (union + smooth)
+    # Flatten tensors while preserving batch and channel dimensions
+    y_true_flat = y_true.view(y_true.size(0), -1)
+    y_pred_flat = y_pred.view(y_pred.size(0), -1)
+    
+    intersection = (y_true_flat * y_pred_flat).sum(dim=1)
+    union = y_true_flat.sum(dim=1) + y_pred_flat.sum(dim=1)
+    
+    dice = (2. * intersection + smooth) / (union + smooth)
+    return dice.mean()
 
 def jacard(y_true, y_pred):
     smooth = 1e-6  # To avoid division by zero
-    intersection = (y_true * y_pred).sum()
-    union = y_true.sum() + y_pred.sum() - intersection
-    return (intersection + smooth) / (union + smooth)
+    # Flatten tensors while preserving batch and channel dimensions
+    y_true_flat = y_true.view(y_true.size(0), -1)
+    y_pred_flat = y_pred.view(y_pred.size(0), -1)
+    
+    intersection = (y_true_flat * y_pred_flat).sum(dim=1)
+    union = y_true_flat.sum(dim=1) + y_pred_flat.sum(dim=1) - intersection
+    
+    jaccard = (intersection + smooth) / (union + smooth)
+    return jaccard.mean()
 
 def saveModel(model, model_dir='models'):
     """
@@ -297,11 +309,15 @@ def evaluateModel(model, X_test, Y_test, batch_size):
         for X_batch, Y_batch in test_loader:
             # Forward pass
             Y_pred = model(X_batch)
-            Y_pred = torch.round(torch.sigmoid(Y_pred))  # Apply sigmoid and round to binary
+            
+            # Apply sigmoid to get probabilities (for BCEWithLogitsLoss output)
+            Y_pred_prob = torch.sigmoid(Y_pred)
+            # Threshold at 0.5 for binary segmentation
+            Y_pred_binary = (Y_pred_prob >= 0.5).float()
 
-            # Compute metrics
-            dice = dice_coef(Y_batch, Y_pred)
-            jaccard = jacard(Y_batch, Y_pred)
+            # Compute metrics on raw probabilities (more stable)
+            dice = dice_coef(Y_batch, Y_pred_binary)
+            jaccard = jacard(Y_batch, Y_pred_binary)
 
             total_dice += dice.item()
             total_jaccard += jaccard.item()
@@ -315,7 +331,9 @@ def evaluateModel(model, X_test, Y_test, batch_size):
 
     return avg_dice, avg_jaccard
 
-def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device):
+def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device, 
+              learning_rate=1e-4, gradient_clip=1.0, weight_decay=0, 
+              save_model=False, save_dir='models', verbose=False):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -328,17 +346,30 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device)
         epochs {int} -- Number of epochs to train.
         batch_size {int} -- Batch size for training.
         device {torch.device} -- The device to use (CPU or GPU).
+        
+    Keyword Arguments:
+        learning_rate {float} -- Initial learning rate (default: 1e-4)
+        gradient_clip {float} -- Maximum gradient norm for clipping (default: 1.0). Set to 0 to disable.
+        weight_decay {float} -- Weight decay (L2 regularization) (default: 0)
+        save_model {bool} -- Whether to save model checkpoints (default: False)
+        save_dir {str} -- Directory to save model checkpoints (default: 'models')
+        verbose {bool} -- Enable verbose logging (default: False)
     """
     from torch.utils.data import DataLoader, TensorDataset
     import torch.nn as nn
     import torch.optim as optim
 
     # Convert NumPy arrays to PyTorch tensors and permute dimensions
-    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2).to(device)  # Move to device
+    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
     Y_train = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
     X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
     Y_val = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
 
+    # Validate data ranges
+    print(f"Y_train range: [{Y_train.min():.4f}, {Y_train.max():.4f}]")
+    print(f"Y_train unique values: {torch.unique(Y_train)}")
+    print(f"Y_train positive pixel ratio: {Y_train.sum() / Y_train.numel():.4f}")
+    
     # Create DataLoaders for training and validation data
     train_dataset = TensorDataset(X_train, Y_train)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -348,14 +379,24 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device)
 
     # Define loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    
+    # Training history
+    history = {'train_loss': [], 'val_dice': [], 'val_jaccard': [], 'val_loss': []}
+    
+    # Best model tracking
+    best_val_dice = 0.0
 
     for epoch in range(epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
+        batch_count = 0
 
         for X_batch, Y_batch in train_loader:
-            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)  # Move data to device
+            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
 
             optimizer.zero_grad()  # Zero the gradients
 
@@ -365,15 +406,76 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device)
             # Compute loss
             loss = criterion(Y_pred, Y_batch)
             loss.backward()  # Backpropagation
+            
+            # Gradient clipping to prevent exploding gradients
+            if gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip)
+            
             optimizer.step()  # Update weights
 
             running_loss += loss.item()
+            batch_count += 1
 
-        avg_loss = running_loss / len(train_loader)
+        avg_loss = running_loss / batch_count
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
 
         # Evaluate on validation data
-        evaluateModel(model, X_val, Y_val, batch_size)
+        avg_dice, avg_jaccard = evaluateModel(model, X_val, Y_val, batch_size)
+        
+        # Calculate validation loss
+        val_loss = 0.0
+        val_batch_count = 0
+        with torch.no_grad():
+            for X_batch, Y_batch in val_loader:
+                X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+                Y_pred = model(X_batch)
+                val_loss += criterion(Y_pred, Y_batch).item()
+                val_batch_count += 1
+        avg_val_loss = val_loss / val_batch_count
+        
+        # Store history
+        history['train_loss'].append(avg_loss)
+        history['val_dice'].append(avg_dice)
+        history['val_jaccard'].append(avg_jaccard)
+        history['val_loss'].append(avg_val_loss)
+        
+        # Adjust learning rate based on validation loss
+        scheduler.step(avg_val_loss)
+        
+        # Print learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"  Current learning rate: {current_lr:.6f}")
+        print(f"  Validation Dice: {avg_dice:.4f}, Jaccard: {avg_jaccard:.4f}")
+        
+        # Save best model
+        if save_model and avg_dice > best_val_dice:
+            best_val_dice = avg_dice
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_dice': avg_dice,
+                'val_jaccard': avg_jaccard,
+                'val_loss': avg_val_loss,
+            }, os.path.join(save_dir, 'best_model_checkpoint.pth'))
+            print(f"  ✓ New best model saved! (Dice: {avg_dice:.4f})")
+        
+        # Early stopping check
+        if epoch > 10 and avg_dice < 0.01:
+            print(f"\n⚠ WARNING: Dice coefficient is very low after {epoch+1} epochs.")
+            print("Consider checking data quality or adjusting hyperparameters.")
+            if verbose:
+                print("Debug info:")
+                print(f"  Training loss: {avg_loss:.4f}")
+                print(f"  Validation loss: {avg_val_loss:.4f}")
 
-    print("Training complete.")
-
+    print("\nTraining complete.")
+    print(f"Final Dice: {history['val_dice'][-1]:.4f}")
+    print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
+    print(f"Best Validation Dice: {best_val_dice:.4f}")
+    
+    # Save training history
+    import numpy as np
+    np.save('training_history.npy', history)
+    print("Training history saved to 'training_history.npy'")
