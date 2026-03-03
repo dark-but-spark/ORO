@@ -283,7 +283,7 @@ def saveModel(model, model_dir='models'):
     print(f"Model architecture saved to {model_arch_path}")
     print(f"Model weights saved to {model_weights_path}")
 
-def evaluateModel(model, X_test, Y_test, batch_size):
+def evaluateModel(model, X_test, Y_test, batch_size, device=None):
     """
     Evaluate the model on test data and compute metrics.
 
@@ -292,13 +292,15 @@ def evaluateModel(model, X_test, Y_test, batch_size):
         X_test {torch.Tensor} -- Test input data.
         Y_test {torch.Tensor} -- Test ground truth labels.
         batch_size {int} -- Batch size for evaluation.
+        device {torch.device} -- The device to use (CPU or GPU).
     """
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
     # Create DataLoader for test data
     test_dataset = TensorDataset(X_test, Y_test)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                            num_workers=0, pin_memory=True)
 
     model.eval()  # Set model to evaluation mode
     total_dice = 0
@@ -307,6 +309,10 @@ def evaluateModel(model, X_test, Y_test, batch_size):
 
     with torch.no_grad():
         for X_batch, Y_batch in test_loader:
+            # Move batch to device if specified
+            if device is not None:
+                X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+            
             # Forward pass
             Y_pred = model(X_batch)
             
@@ -359,23 +365,27 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device,
     import torch.nn as nn
     import torch.optim as optim
 
-    # Convert NumPy arrays to PyTorch tensors and permute dimensions
-    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-    Y_train = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-    X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-    Y_val = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
+    # Convert NumPy arrays to PyTorch tensors and permute dimensions [N, C, H, W]
+    # Keep tensors on CPU to avoid memory issues - move to GPU in batches
+    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
+    Y_train = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2)
+    X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
+    Y_val = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
 
-    # Validate data ranges
+    # Validate data ranges (on CPU to save memory)
     print(f"Y_train range: [{Y_train.min():.4f}, {Y_train.max():.4f}]")
     print(f"Y_train unique values: {torch.unique(Y_train)}")
     print(f"Y_train positive pixel ratio: {Y_train.sum() / Y_train.numel():.4f}")
     
     # Create DataLoaders for training and validation data
+    # DataLoaders will handle batch creation and GPU transfer
     train_dataset = TensorDataset(X_train, Y_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                             num_workers=0, pin_memory=True)
 
     val_dataset = TensorDataset(X_val, Y_val)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                           num_workers=0, pin_memory=True)
 
     # Define loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()
@@ -389,6 +399,7 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device,
     
     # Best model tracking
     best_val_dice = 0.0
+    best_model_state = None
 
     for epoch in range(epochs):
         model.train()  # Set model to training mode
@@ -419,8 +430,8 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device,
         avg_loss = running_loss / batch_count
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
 
-        # Evaluate on validation data
-        avg_dice, avg_jaccard = evaluateModel(model, X_val, Y_val, batch_size)
+        # Evaluate on validation data (pass device for GPU acceleration)
+        avg_dice, avg_jaccard = evaluateModel(model, X_val, Y_val, batch_size, device=device)
         
         # Calculate validation loss
         val_loss = 0.0

@@ -20,8 +20,8 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 EPOCHS=${EPOCHS:-50}
 BATCH_SIZE=${BATCH_SIZE:-2}
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
-DATA_LIMIT=${DATA_LIMIT:-100}
-VALIDATION_SPLIT=${VALIDATION_SPLIT:-0.2}
+DATA_LIMIT=${DATA_LIMIT:-""}  # Empty means use all data (None in Python)
+VALIDATION_SPLIT=${VALIDATION_SPLIT:-0.1}
 INPUT_CHANNELS=${INPUT_CHANNELS:-3}
 OUTPUT_CHANNELS=${OUTPUT_CHANNELS:-4}
 GRADIENT_CLIP=${GRADIENT_CLIP:-1.0}
@@ -98,20 +98,29 @@ cd "${PROJECT_DIR}"
 echo "Starting training..." | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 
-python train.py \
-    --epochs "${EPOCHS}" \
-    --batch-size "${BATCH_SIZE}" \
-    --learning-rate "${LEARNING_RATE}" \
-    --data-limit "${DATA_LIMIT}" \
-    --validation-split "${VALIDATION_SPLIT}" \
-    --input-channels "${INPUT_CHANNELS}" \
-    --output-channels "${OUTPUT_CHANNELS}" \
-    --gradient-clip "${GRADIENT_CLIP}" \
-    --device "${DEVICE}" \
-    --verbose \
-    --save-model \
-    --save-dir "${RUNS_DIR}/models" \
-    --debug 2>&1 | tee -a "$LOG_FILE"
+# Build training command with conditional data-limit handling
+TRAIN_CMD="python train.py"
+TRAIN_CMD+=" --epochs ${EPOCHS}"
+TRAIN_CMD+=" --batch-size ${BATCH_SIZE}"
+TRAIN_CMD+=" --learning-rate ${LEARNING_RATE}"
+
+# Only add --data-limit if it's specified (non-empty)
+if [ -n "${DATA_LIMIT}" ]; then
+    TRAIN_CMD+=" --data-limit ${DATA_LIMIT}"
+fi
+
+TRAIN_CMD+=" --validation-split ${VALIDATION_SPLIT}"
+TRAIN_CMD+=" --input-channels ${INPUT_CHANNELS}"
+TRAIN_CMD+=" --output-channels ${OUTPUT_CHANNELS}"
+TRAIN_CMD+=" --gradient-clip ${GRADIENT_CLIP}"
+TRAIN_CMD+=" --device ${DEVICE}"
+TRAIN_CMD+=" --verbose"
+TRAIN_CMD+=" --save-model"
+TRAIN_CMD+=" --save-dir ${RUNS_DIR}/models"
+TRAIN_CMD+=" --debug"
+
+# Execute the constructed command and log output
+eval $TRAIN_CMD 2>&1 | tee -a "$LOG_FILE"
 
 TRAIN_STATUS=$?
 
