@@ -348,7 +348,8 @@ def evaluateModel(model, X_test=None, Y_test=None, batch_size=2, device=None, va
 
 def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               train_loader=None, val_loader=None, epochs=50, batch_size=2, device='cuda', 
-              learning_rate=1e-4, gradient_clip=1.0, weight_decay=0, 
+              learning_rate=1e-4, gradient_clip=1.0, weight_decay=0,
+              num_workers=4, prefetch_factor=2,
               save_model=False, save_dir='models', verbose=False):
     """
     Train the model for multiple epochs and evaluate after each epoch.
@@ -369,6 +370,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         learning_rate {float} -- Initial learning rate (default: 1e-4)
         gradient_clip {float} -- Maximum gradient norm for clipping (default: 1.0). Set to 0 to disable.
         weight_decay {float} -- Weight decay (L2 regularization) (default: 0)
+        num_workers {int} -- Number of worker processes for data loading (default: 4)
+        prefetch_factor {int} -- Number of batches loaded in advance by each worker (default: 2)
         save_model {bool} -- Whether to save model checkpoints (default: False)
         save_dir {str} -- Directory to save model checkpoints (default: 'models')
         verbose {bool} -- Enable verbose logging (default: False)
@@ -403,8 +406,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         
         print(f"Training tensor shape: {X_train_tensor.shape}")
         train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+        # Use configurable workers for data loading
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                                 num_workers=0, pin_memory=True)
+                                 num_workers=num_workers, pin_memory=True, 
+                                 prefetch_factor=prefetch_factor, persistent_workers=True)
 
     if val_loader is None:
         if X_val is None or Y_val is None:
@@ -420,8 +425,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         
         print(f"Validation tensor shape: {X_val_tensor.shape}")
         val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
+        # Use configurable workers for validation data loading
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                               num_workers=0, pin_memory=True)
+                               num_workers=num_workers, pin_memory=True, 
+                               prefetch_factor=prefetch_factor, persistent_workers=True)
 
     # Define loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()

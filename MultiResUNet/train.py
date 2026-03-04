@@ -56,6 +56,12 @@ def parse_args():
     parser.add_argument('--weight-decay', type=float, default=0,
                         help='Weight decay (L2 regularization) for optimizer (default: 0)')
     
+    # Data loading optimization
+    parser.add_argument('--num-workers', type=int, default=4,
+                        help='Number of worker processes for data loading (default: 4). Increase to utilize more CPU cores')
+    parser.add_argument('--prefetch-factor', type=int, default=2,
+                        help='Number of batches loaded in advance by each worker (default: 2)')
+    
     # Logging and saving
     parser.add_argument('--verbose', action='store_true',
                         help='Enable verbose logging during training')
@@ -166,6 +172,8 @@ def main():
             learning_rate=args.learning_rate,
             gradient_clip=args.gradient_clip,
             weight_decay=args.weight_decay,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
             verbose=args.verbose
@@ -231,6 +239,8 @@ def main():
             learning_rate=args.learning_rate,
             gradient_clip=args.gradient_clip,
             weight_decay=args.weight_decay,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
             verbose=args.verbose

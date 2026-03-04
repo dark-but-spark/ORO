@@ -16,7 +16,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Default training parameters (can be overridden by command line arguments)
 EPOCHS=${EPOCHS:-50}
-BATCH_SIZE=${BATCH_SIZE:-2}
+BATCH_SIZE=${BATCH_SIZE:-8}              # Increased from 2 to 8 for better GPU utilization
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 DATA_LIMIT=${DATA_LIMIT:-""}  # Empty means use all data (None in Python)
 VALIDATION_SPLIT=${VALIDATION_SPLIT:-0.1}
@@ -24,6 +24,8 @@ INPUT_CHANNELS=${INPUT_CHANNELS:-3}
 OUTPUT_CHANNELS=${OUTPUT_CHANNELS:-4}
 GRADIENT_CLIP=${GRADIENT_CLIP:-1.0}
 DEVICE=${DEVICE:-cuda}
+NUM_WORKERS=${NUM_WORKERS:-6}            # Optimized for 32-core CPU
+PREFETCH_FACTOR=${PREFETCH_FACTOR:-3}    # Increased prefetch for better performance
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -37,6 +39,8 @@ while [[ "$#" -gt 0 ]]; do
         --output-channels) OUTPUT_CHANNELS="$2"; shift ;;
         --gradient-clip) GRADIENT_CLIP="$2"; shift ;;
         --device) DEVICE="$2"; shift ;;
+        --num-workers) NUM_WORKERS="$2"; shift ;;
+        --prefetch-factor) PREFETCH_FACTOR="$2"; shift ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -50,6 +54,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --output-channels NUM  Number of output channels (default: 4)"
             echo "  --gradient-clip FLOAT  Gradient clipping threshold (default: 1.0)"
             echo "  --device DEVICE        Training device: cuda or cpu (default: cuda)"
+            echo "  --num-workers NUM      Number of data loading workers (default: 6 for 32-core CPU)"
+            echo "  --prefetch-factor NUM  Batches prefetched per worker (default: 3)"
             echo "  --help                 Show this help message"
             echo ""
             echo "Example:"
@@ -112,6 +118,8 @@ TRAIN_CMD+=" --input-channels ${INPUT_CHANNELS}"
 TRAIN_CMD+=" --output-channels ${OUTPUT_CHANNELS}"
 TRAIN_CMD+=" --gradient-clip ${GRADIENT_CLIP}"
 TRAIN_CMD+=" --device ${DEVICE}"
+TRAIN_CMD+=" --num-workers ${NUM_WORKERS}"
+TRAIN_CMD+=" --prefetch-factor ${PREFETCH_FACTOR}"
 TRAIN_CMD+=" --verbose"
 TRAIN_CMD+=" --save-model"
 TRAIN_CMD+=" --save-dir ${RUNS_DIR}/models"
