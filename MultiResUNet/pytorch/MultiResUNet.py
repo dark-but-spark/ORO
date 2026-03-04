@@ -428,7 +428,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
     # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     # Training history
     history = {'train_loss': [], 'val_dice': [], 'val_jaccard': [], 'val_loss': []}

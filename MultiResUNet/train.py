@@ -141,6 +141,17 @@ def main():
         print(f"✓ Validation samples: {n_val}")
         print(f"✓ Memory usage: Minimal (data loaded batch-by-batch)")
         
+        # Initialize model BEFORE training
+        print(f"\nInitializing model...")
+        model = MultiResUnet(
+            input_channels=args.input_channels, 
+            num_classes=args.output_channels
+        ).to(device)
+        
+        print(f"Model architecture: MultiResUNet")
+        print(f"  Input: {args.input_channels} channels")
+        print(f"  Output: {args.output_channels} channels")
+        
         # Train the model with DataLoaders
         print(f"\nStarting training...")
         print("-" * 60)
