@@ -13,8 +13,6 @@ from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split, Subset
 from tqdm import tqdm
-
-import wandb
 import numpy as np
 
 from torch.utils.tensorboard import SummaryWriter

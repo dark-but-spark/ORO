@@ -283,24 +283,33 @@ def saveModel(model, model_dir='models'):
     print(f"Model architecture saved to {model_arch_path}")
     print(f"Model weights saved to {model_weights_path}")
 
-def evaluateModel(model, X_test, Y_test, batch_size, device=None):
+def evaluateModel(model, X_test=None, Y_test=None, batch_size=2, device=None, val_loader=None):
     """
-    Evaluate the model on test data and compute metrics.
+    Evaluate the model on test/validation data and compute metrics.
 
     Arguments:
         model {torch.nn.Module} -- The PyTorch model to evaluate.
-        X_test {torch.Tensor} -- Test input data.
-        Y_test {torch.Tensor} -- Test ground truth labels.
-        batch_size {int} -- Batch size for evaluation.
-        device {torch.device} -- The device to use (CPU or GPU).
+        
+    Keyword Arguments:
+        X_test {torch.Tensor} -- Test input data (optional if val_loader provided).
+        Y_test {torch.Tensor} -- Test ground truth labels (optional if val_loader provided).
+        batch_size {int} -- Batch size for evaluation (default: 2).
+        device {torch.device} -- The device to use (CPU or GPU) (optional).
+        val_loader {DataLoader} -- Validation data loader (optional, will create from X_test/Y_test if not provided).
+    
+    Returns:
+        tuple: (average_dice, average_jaccard)
     """
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
-    # Create DataLoader for test data
-    test_dataset = TensorDataset(X_test, Y_test)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
-                            num_workers=0, pin_memory=True)
+    # Create DataLoader if not provided
+    if val_loader is None:
+        if X_test is None or Y_test is None:
+            raise ValueError("Either (X_test, Y_test) or val_loader must be provided")
+        test_dataset = TensorDataset(X_test, Y_test)
+        val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                                num_workers=0, pin_memory=True)
 
     model.eval()  # Set model to evaluation mode
     total_dice = 0
@@ -308,7 +317,7 @@ def evaluateModel(model, X_test, Y_test, batch_size, device=None):
     num_batches = 0
 
     with torch.no_grad():
-        for X_batch, Y_batch in test_loader:
+        for X_batch, Y_batch in val_loader:
             # Move batch to device if specified
             if device is not None:
                 X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
@@ -337,7 +346,8 @@ def evaluateModel(model, X_test, Y_test, batch_size, device=None):
 
     return avg_dice, avg_jaccard
 
-def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device, 
+def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
+              train_loader=None, val_loader=None, epochs=50, batch_size=2, device='cuda', 
               learning_rate=1e-4, gradient_clip=1.0, weight_decay=0, 
               save_model=False, save_dir='models', verbose=False):
     """
@@ -345,47 +355,73 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device,
 
     Arguments:
         model {torch.nn.Module} -- The PyTorch model to train.
-        X_train {np.ndarray} -- Training input data (NumPy array).
-        Y_train {np.ndarray} -- Training ground truth labels (NumPy array).
-        X_val {np.ndarray} -- Validation input data (NumPy array).
-        Y_val {np.ndarray} -- Validation ground truth labels (NumPy array).
-        epochs {int} -- Number of epochs to train.
-        batch_size {int} -- Batch size for training.
-        device {torch.device} -- The device to use (CPU or GPU).
         
     Keyword Arguments:
+        X_train {np.ndarray} -- Training input data (NumPy array, optional if train_loader provided).
+        Y_train {np.ndarray} -- Training ground truth labels (NumPy array, optional if train_loader provided).
+        X_val {np.ndarray} -- Validation input data (NumPy array, optional if val_loader provided).
+        Y_val {np.ndarray} -- Validation ground truth labels (NumPy array, optional if val_loader provided).
+        train_loader {DataLoader} -- Training data loader (optional, will create from X_train/Y_train if not provided).
+        val_loader {DataLoader} -- Validation data loader (optional, will create from X_val/Y_val if not provided).
+        epochs {int} -- Number of epochs to train (default: 50).
+        batch_size {int} -- Batch size for training (default: 2).
+        device {str/device} -- The device to use (CPU or GPU) (default: 'cuda').
         learning_rate {float} -- Initial learning rate (default: 1e-4)
         gradient_clip {float} -- Maximum gradient norm for clipping (default: 1.0). Set to 0 to disable.
         weight_decay {float} -- Weight decay (L2 regularization) (default: 0)
         save_model {bool} -- Whether to save model checkpoints (default: False)
         save_dir {str} -- Directory to save model checkpoints (default: 'models')
         verbose {bool} -- Enable verbose logging (default: False)
+    
+    Returns:
+        dict: Training history containing loss and metrics
     """
     from torch.utils.data import DataLoader, TensorDataset
     import torch.nn as nn
     import torch.optim as optim
+    import os
+    import gc
 
-    # Convert NumPy arrays to PyTorch tensors and permute dimensions [N, C, H, W]
-    # Keep tensors on CPU to avoid memory issues - move to GPU in batches
-    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
-    Y_train = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2)
-    X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
-    Y_val = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
-
-    # Validate data ranges (on CPU to save memory)
-    print(f"Y_train range: [{Y_train.min():.4f}, {Y_train.max():.4f}]")
-    print(f"Y_train unique values: {torch.unique(Y_train)}")
-    print(f"Y_train positive pixel ratio: {Y_train.sum() / Y_train.numel():.4f}")
+    # Convert device string to torch.device if needed
+    if isinstance(device, str):
+        device = torch.device(device)
     
-    # Create DataLoaders for training and validation data
-    # DataLoaders will handle batch creation and GPU transfer
-    train_dataset = TensorDataset(X_train, Y_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                             num_workers=0, pin_memory=True)
+    # Create DataLoaders if not provided
+    # Priority: 1) Provided loaders, 2) NumPy arrays
+    if train_loader is None:
+        if X_train is None or Y_train is None:
+            raise ValueError("Either (X_train, Y_train) or train_loader must be provided")
+        
+        # Convert NumPy arrays to PyTorch tensors
+        print(f"Converting training data to tensors...")
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
+        Y_train_tensor = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2)
+        
+        # Clear NumPy arrays from memory
+        del X_train, Y_train
+        gc.collect()
+        
+        print(f"Training tensor shape: {X_train_tensor.shape}")
+        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                                 num_workers=0, pin_memory=True)
 
-    val_dataset = TensorDataset(X_val, Y_val)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                           num_workers=0, pin_memory=True)
+    if val_loader is None:
+        if X_val is None or Y_val is None:
+            raise ValueError("Either (X_val, Y_val) or val_loader must be provided")
+        
+        print(f"Converting validation data to tensors...")
+        X_val_tensor = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
+        Y_val_tensor = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
+        
+        # Clear NumPy arrays from memory
+        del X_val, Y_val
+        gc.collect()
+        
+        print(f"Validation tensor shape: {X_val_tensor.shape}")
+        val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                               num_workers=0, pin_memory=True)
 
     # Define loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()
@@ -431,7 +467,7 @@ def trainStep(model, X_train, Y_train, X_val, Y_val, epochs, batch_size, device,
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
 
         # Evaluate on validation data (pass device for GPU acceleration)
-        avg_dice, avg_jaccard = evaluateModel(model, X_val, Y_val, batch_size, device=device)
+        avg_dice, avg_jaccard = evaluateModel(model, None, None, batch_size, device=device, val_loader=val_loader)
         
         # Calculate validation loss
         val_loss = 0.0

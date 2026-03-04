@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument('--validation-split', type=float, default=0.1,
                         help='Proportion of data used for validation (default: 0.1)')
     
+    # Image resizing arguments
+    parser.add_argument('--scale', action='store_true',
+                        help='Enable image scaling')
+    parser.add_argument('--scale-factor', type=float, default=0.5,
+                        help='Scale factor for images (default: 0.5). E.g., 0.5 reduces to 50%, 1.5 increases to 150%')
+    
     # Model arguments
     parser.add_argument('--input-channels', type=int, default=3,
                         help='Number of input image channels (default: 3)')
@@ -83,6 +89,9 @@ def main():
     print("=" * 60)
     print(f"Data Limit: {args.data_limit} samples")
     print(f"Validation Split: {args.validation_split:.1%}")
+    print(f"Scale Enabled: {args.scale}")
+    if args.scale:
+        print(f"Scale Factor: {args.scale_factor} ({args.scale_factor*100:.0f}%)")
     print(f"Input Channels: {args.input_channels}")
     print(f"Output Channels: {args.output_channels}")
     print(f"Epochs: {args.epochs}")
@@ -103,67 +112,118 @@ def main():
         device = torch.device(args.device if args.device == 'cuda' and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load data
-    print(f"\nLoading data (limit={args.data_limit})...")
-    X, Y = load_data(limit=args.data_limit)
-
-    # Validate mask channels BEFORE any processing
-    if args.debug or args.check_data:
-        print(f"\nData Validation:")
-        print(f"  Original Y shape: {Y.shape}")
-        print(f"  Y sample unique values: {np.unique(Y[0])}")
-        print(f"  Y value range: [{Y.min():.4f}, {Y.max():.4f}]")
-        print(f"  Y positive pixel ratio: {Y.sum() / Y.size:.4f}")
+    # Load data using memory-efficient approach
+    print(f"\nLoading data...")
     
-    # Ensure Y has correct number of channels
-    if Y.shape[-1] == 1:
-        print("⚠ WARNING: Single channel mask detected. Duplicating to match output channels...")
-        Y = np.concatenate([Y] * args.output_channels, axis=-1)
-        print(f"After duplication Y shape: {Y.shape}")
-    elif Y.shape[-1] != args.output_channels:
-        raise ValueError(f"Expected {args.output_channels} channels in mask, got {Y.shape[-1]}")
-
-    # Split data into training and validation sets
-    print(f"\nSplitting data (validation={args.validation_split:.1%})...")
-    X_train, X_val, Y_train, Y_val = split_data(X, Y, validation=args.validation_split)
-
-    # Define the model
-    print(f"\nInitializing model...")
-    model = MultiResUnet(
-        input_channels=args.input_channels, 
-        num_classes=args.output_channels
-    ).to(device)
+    # Option 1: Use new memory-efficient Dataset approach (recommended for large datasets)
+    if args.data_limit is None or args.data_limit > 500:
+        print("Using memory-efficient dataset loading (recommended for large datasets)...")
+        from dataloading import create_datasets
+        
+        # Create datasets that will load data on-demand
+        train_dataset, val_dataset, n_train, n_val = create_datasets(
+            img_dir='data/imgs',
+            mask_dir='data/masks',
+            limit=args.data_limit,
+            train_ratio=1.0 - args.validation_split,
+            scale=args.scale,
+            scale_factor=args.scale_factor
+        )
+        
+        # Create DataLoaders
+        from torch.utils.data import DataLoader
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                                  num_workers=0, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                num_workers=0, pin_memory=True)
+        
+        print(f"✓ Training samples: {n_train}")
+        print(f"✓ Validation samples: {n_val}")
+        print(f"✓ Memory usage: Minimal (data loaded batch-by-batch)")
+        
+        # Train the model with DataLoaders
+        print(f"\nStarting training...")
+        print("-" * 60)
+        
+        history = trainStep(
+            model, 
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=args.epochs, 
+            batch_size=args.batch_size, 
+            device=device,
+            learning_rate=args.learning_rate,
+            gradient_clip=args.gradient_clip,
+            weight_decay=args.weight_decay,
+            save_model=args.save_model,
+            save_dir=args.save_dir,
+            verbose=args.verbose
+        )
     
-    print(f"Model architecture: MultiResUNet")
-    print(f"  Input: {args.input_channels} channels")
-    print(f"  Output: {args.output_channels} channels")
-    print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
-    
-    # Print data statistics
-    if args.debug:
-        print(f"\nData Statistics:")
-        print(f"  X_train range: [{X_train.min():.4f}, {X_train.max():.4f}]")
-        print(f"  Y_train range: [{Y_train.min():.4f}, {Y_train.max():.4f}]")
-        print(f"  Y_train positive ratio: {Y_train.sum() / Y_train.size:.4f}")
+    else:
+        # Option 2: Use traditional approach for small datasets (< 500 samples)
+        print("Using traditional in-memory loading (suitable for small datasets)...")
+        X, Y = load_data(limit=args.data_limit, 
+                        scale=args.scale,
+                        scale_factor=args.scale_factor)
 
-    # Train the model
-    print(f"\nStarting training...")
-    print("-" * 60)
-    
-    trainStep(
-        model, 
-        X_train, Y_train, 
-        X_val, Y_val, 
-        epochs=args.epochs, 
-        batch_size=args.batch_size, 
-        device=device,
-        learning_rate=args.learning_rate,
-        gradient_clip=args.gradient_clip,
-        weight_decay=args.weight_decay,
-        save_model=args.save_model,
-        save_dir=args.save_dir,
-        verbose=args.verbose
-    )
+        # Validate mask channels BEFORE any processing
+        if args.debug or args.check_data:
+            print(f"\nData Validation:")
+            print(f"  Original Y shape: {Y.shape}")
+            print(f"  Y sample unique values: {np.unique(Y[0])}")
+            print(f"  Y value range: [{Y.min():.4f}, {Y.max():.4f}]")
+            print(f"  Y positive pixel ratio: {Y.sum() / Y.size:.4f}")
+        
+        # Ensure Y has correct number of channels
+        if Y.shape[-1] == 1:
+            print("⚠ WARNING: Single channel mask detected. Duplicating to match output channels...")
+            Y = np.concatenate([Y] * args.output_channels, axis=-1)
+            print(f"After duplication Y shape: {Y.shape}")
+        elif Y.shape[-1] != args.output_channels:
+            raise ValueError(f"Expected {args.output_channels} channels in mask, got {Y.shape[-1]}")
+
+        # Split data into training and validation sets
+        print(f"\nSplitting data (validation={args.validation_split:.1%})...")
+        X_train, X_val, Y_train, Y_val = split_data(X, Y, validation=args.validation_split)
+
+        # Define the model
+        print(f"\nInitializing model...")
+        model = MultiResUnet(
+            input_channels=args.input_channels, 
+            num_classes=args.output_channels
+        ).to(device)
+        
+        print(f"Model architecture: MultiResUNet")
+        print(f"  Input: {args.input_channels} channels")
+        print(f"  Output: {args.output_channels} channels")
+        print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
+        
+        # Print data statistics
+        if args.debug:
+            print(f"\nData Statistics:")
+            print(f"  X_train range: [{X_train.min():.4f}, {X_train.max():.4f}]")
+            print(f"  Y_train range: [{Y_train.min():.4f}, {Y_train.max():.4f}]")
+            print(f"  Y_train positive ratio: {Y_train.sum() / Y_train.size:.4f}")
+
+        # Train the model
+        print(f"\nStarting training...")
+        print("-" * 60)
+        
+        history = trainStep(
+            model, 
+            X_train, Y_train, 
+            X_val, Y_val, 
+            epochs=args.epochs, 
+            batch_size=args.batch_size, 
+            device=device,
+            learning_rate=args.learning_rate,
+            gradient_clip=args.gradient_clip,
+            weight_decay=args.weight_decay,
+            save_model=args.save_model,
+            save_dir=args.save_dir,
+            verbose=args.verbose
+        )
     
     print("-" * 60)
     print("Training complete!")

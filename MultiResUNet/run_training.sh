@@ -6,8 +6,6 @@
 # Activate the Python environment
 source /share/home/zjm/anaconda3/bin/activate zjm
 
-# Navigate to the project directory
-cd /share/home/zjm/ORO/Pytorch-UNet
 
 set -e  # Exit on error
 
@@ -83,7 +81,7 @@ echo "Training Configuration:" | tee -a "$LOG_FILE"
 echo "  Epochs: ${EPOCHS}" | tee -a "$LOG_FILE"
 echo "  Batch Size: ${BATCH_SIZE}" | tee -a "$LOG_FILE"
 echo "  Learning Rate: ${LEARNING_RATE}" | tee -a "$LOG_FILE"
-echo "  Data Limit: ${DATA_LIMIT}" | tee -a "$LOG_FILE"
+echo "  Data Limit: ${DATA_LIMIT:-None}" | tee -a "$LOG_FILE"
 echo "  Validation Split: ${VALIDATION_SPLIT}" | tee -a "$LOG_FILE"
 echo "  Input Channels: ${INPUT_CHANNELS}" | tee -a "$LOG_FILE"
 echo "  Output Channels: ${OUTPUT_CHANNELS}" | tee -a "$LOG_FILE"
