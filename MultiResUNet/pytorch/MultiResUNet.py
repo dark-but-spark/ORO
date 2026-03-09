@@ -484,6 +484,11 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
 
             running_loss += loss.item()
             batch_count += 1
+            
+            # Memory cleanup: Release batch tensors
+            del Y_pred, loss
+            if (batch_count % 10 == 0) and (device.type == 'cuda'):
+                torch.cuda.empty_cache()
 
         avg_loss = running_loss / batch_count
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
@@ -500,6 +505,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 Y_pred = model(X_batch)
                 val_loss += criterion(Y_pred, Y_batch).item()
                 val_batch_count += 1
+                
+                # Cleanup validation tensors
+                del Y_pred
         avg_val_loss = val_loss / val_batch_count
         
         # Store history
@@ -546,6 +554,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 print("Debug info:")
                 print(f"  Training loss: {avg_loss:.4f}")
                 print(f"  Validation loss: {avg_val_loss:.4f}")
+        
+        # Periodic memory cleanup (every 10 epochs)
+        if (epoch + 1) % 10 == 0 and device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gc.collect()
+            print(f"  ✓ Memory cleanup completed")
 
     print("\nTraining complete.")
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")

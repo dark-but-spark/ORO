@@ -12,17 +12,24 @@ REM Get timestamp
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set "dt=%%I"
 set "TIMESTAMP=%dt:~0,8%_%dt:~8,6%"
 
-REM Default training parameters (can be overridden by command line arguments)
-set "EPOCHS=50"
-set "BATCH_SIZE=2"
+REM Default training parameters (OPTIMIZED for 3000-4000 samples @ 640x640)
+set "EPOCHS=150"
+set "BATCH_SIZE=4"              REM Reduced for large datasets
 set "LEARNING_RATE=1e-4"
-set "DATA_LIMIT=100"
-set "VALIDATION_SPLIT=0.2"
+set "DATA_LIMIT="
+set "VALIDATION_SPLIT=0.1"
 set "INPUT_CHANNELS=3"
 set "OUTPUT_CHANNELS=4"
-set "GRADIENT_CLIP=1.0"
+set "GRADIENT_CLIP=1.0"         REM Prevent gradient explosion
 set "DEVICE=cuda"
-set "TENSORBOARD=true"
+set "NUM_WORKERS=8"             REM Optimized for 32-core CPU
+set "PREFETCH_FACTOR=4"         REM Increased prefetch for large datasets
+set "TENSORBOARD=true"          REM Enable TensorBoard by default
+set "MEMORY_SAFE_MODE=true"     REM Enable automatic memory management
+
+REM Scale optimization for large datasets
+set "SCALE_ENABLED=false"
+set "SCALE_FACTOR=0.5"          REM 50% reduction (640x640 -> 320x320)
 
 REM Parse command line arguments
 :parse_args

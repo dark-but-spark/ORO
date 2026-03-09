@@ -14,19 +14,26 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_DIR="${PROJECT_DIR}/runs"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# Default training parameters (can be overridden by command line arguments)
-EPOCHS=${EPOCHS:-50}
-BATCH_SIZE=${BATCH_SIZE:-8}              # Increased from 2 to 8 for better GPU utilization
+# Default training parameters (OPTIMIZED for 3000-4000 samples @ 640x640)
+EPOCHS=${EPOCHS:-150}
+BATCH_SIZE=${BATCH_SIZE:-4}              # Reduced for large datasets
 LEARNING_RATE=${LEARNING_RATE:-1e-4}
 DATA_LIMIT=${DATA_LIMIT:-""}  # Empty means use all data (None in Python)
 VALIDATION_SPLIT=${VALIDATION_SPLIT:-0.1}
 INPUT_CHANNELS=${INPUT_CHANNELS:-3}
 OUTPUT_CHANNELS=${OUTPUT_CHANNELS:-4}
-GRADIENT_CLIP=${GRADIENT_CLIP:-1.0}
+GRADIENT_CLIP=${GRADIENT_CLIP:-1.0}      # Prevent gradient explosion
 DEVICE=${DEVICE:-cuda}
-NUM_WORKERS=${NUM_WORKERS:-6}            # Optimized for 32-core CPU
-PREFETCH_FACTOR=${PREFETCH_FACTOR:-3}    # Increased prefetch for better performance
+NUM_WORKERS=${NUM_WORKERS:-8}            # Optimized for 32-core CPU
+PREFETCH_FACTOR=${PREFETCH_FACTOR:-4}    # Increased prefetch for large datasets
 TENSORBOARD=${TENSORBOARD:-true}         # Enable TensorBoard by default
+
+# Memory protection: Auto-adjust based on data size
+MEMORY_SAFE_MODE=${MEMORY_SAFE_MODE:-true}  # Enable automatic memory management
+
+# Scale optimization for large datasets
+SCALE_ENABLED=${SCALE_ENABLED:-false}
+SCALE_FACTOR=${SCALE_FACTOR:-0.5}  # 50% reduction (640x640 -> 320x320)
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do

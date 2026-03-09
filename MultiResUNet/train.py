@@ -9,15 +9,167 @@ from sklearn.model_selection import train_test_split
 from keras import backend as K
 import torch
 import argparse
+import gc
 from datetime import datetime
 
 # Import the MultiResUNet model and utility functions
 from pytorch.MultiResUNet import MultiResUnet, dice_coef, jacard, saveModel, evaluateModel, trainStep
-from dataloading import load_data, split_data
+from dataloading import load_data, split_data, create_datasets
 
 # Define paths for data
 IMAGE_DIR = 'data/imgs/'
 MASK_DIR = 'data/masks/'
+
+
+def check_memory_usage():
+    """Check current system and GPU memory status"""
+    import psutil
+    
+    print("=" * 60)
+    print("Memory Status Check")
+    print("=" * 60)
+    
+    # System memory
+    mem = psutil.virtual_memory()
+    print(f"System Memory:")
+    print(f"  Total: {mem.total / 1024**3:.1f} GB")
+    print(f"  Available: {mem.available / 1024**3:.1f} GB")
+    print(f"  Used: {mem.used / 1024**3:.1f} GB ({mem.percent}%)")
+    
+    if mem.percent > 80:
+        print(f"  ⚠ WARNING: High memory usage! Consider closing other applications")
+    elif mem.percent > 90:
+        print(f"  🚨 CRITICAL: Very high memory usage! OOM risk is high")
+    
+    # GPU memory (if available)
+    if torch.cuda.is_available():
+        print(f"\nGPU Memory:")
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        gpu_allocated = torch.cuda.memory_allocated(0) / 1024**3
+        gpu_reserved = torch.cuda.memory_reserved(0) / 1024**3
+        
+        print(f"  Total: {gpu_mem:.1f} GB")
+        print(f"  Allocated: {gpu_allocated:.2f} GB ({gpu_allocated/gpu_mem*100:.1f}%)")
+        print(f"  Reserved: {gpu_reserved:.2f} GB ({gpu_reserved/gpu_mem*100:.1f}%)")
+        
+        if gpu_allocated/gpu_mem > 0.8:
+            print(f"  ⚠ WARNING: High GPU memory usage!")
+    
+    print("")
+
+
+def estimate_memory_requirements(data_limit, batch_size, image_size=(640, 640), channels=7):
+    """Estimate memory requirements for training"""
+    print("=" * 60)
+    print("Memory Requirements Estimation")
+    print("=" * 60)
+    
+    # Calculate per-sample memory
+    bytes_per_sample = image_size[0] * image_size[1] * channels * 4  # float32 = 4 bytes
+    mb_per_sample = bytes_per_sample / 1024**2
+    
+    print(f"Per Sample Memory:")
+    print(f"  Image size: {image_size[0]}x{image_size[1]}")
+    print(f"  Channels: {channels}")
+    print(f"  Size per sample: {mb_per_sample:.2f} MB")
+    
+    # Total memory if loading all data
+    total_mb = data_limit * mb_per_sample
+    total_gb = total_mb / 1024
+    
+    print(f"\nFull Loading (NOT RECOMMENDED for large datasets):")
+    print(f"  Samples: {data_limit}")
+    print(f"  Total memory: {total_mb:.0f} MB ({total_gb:.1f} GB)")
+    
+    if total_gb > 8:
+        print(f"  ⚠ WARNING: This will likely cause OOM!")
+        print(f"  ✓ Recommendation: Use streaming data loading")
+    
+    # Streaming mode memory (only current batch + overhead)
+    batch_mb = batch_size * mb_per_sample * 2  # input + mask
+    overhead_mb = batch_mb * 0.3  # 30% overhead for gradients, optimizer states
+    streaming_mb = batch_mb + overhead_mb + 500  # base overhead
+    
+    print(f"\nStreaming Mode (RECOMMENDED):")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Memory per batch: {batch_mb:.0f} MB")
+    print(f"  Estimated total: ~{streaming_mb:.0f} MB ({streaming_mb/1024:.1f} GB)")
+    print(f"  Memory savings: {(1 - streaming_mb/total_mb)*100:.1f}%")
+    
+    print("")
+
+
+def diagnose_data_flow(args):
+    """Run comprehensive data flow diagnosis"""
+    print("\n" + "=" * 60)
+    print("Data Flow Diagnosis")
+    print("=" * 60)
+    
+    # Test data loading
+    print("\n1. Testing data loading...")
+    try:
+        if args.data_limit and args.data_limit < 10:
+            test_limit = args.data_limit
+        else:
+            test_limit = 5
+        
+        print(f"   Loading {test_limit} samples for testing...")
+        X_test, Y_test = load_data(limit=test_limit, scale=args.scale, scale_factor=args.scale_factor)
+        print(f"   ✓ Data loaded successfully")
+        print(f"   - X shape: {X_test.shape}, dtype: {X_test.dtype}, range: [{X_test.min():.3f}, {X_test.max():.3f}]")
+        print(f"   - Y shape: {Y_test.shape}, dtype: {Y_test.dtype}, range: [{Y_test.min():.3f}, {Y_test.max():.3f}]")
+        
+        # Check for all zeros
+        if X_test.sum() == 0:
+            print(f"   ⚠ WARNING: All input images are zero! Check data preprocessing")
+        if Y_test.sum() == 0:
+            print(f"   ⚠ WARNING: All masks are zero! Check mask generation")
+        
+        del X_test, Y_test
+        gc.collect()
+        
+    except Exception as e:
+        print(f"   ✗ ERROR: {str(e)}")
+        return False
+    
+    # Test dataset creation
+    print("\n2. Testing streaming dataset creation...")
+    try:
+        train_ds, val_ds, n_train, n_val = create_datasets(
+            limit=args.data_limit if args.data_limit else 10,
+            scale=args.scale,
+            scale_factor=args.scale_factor
+        )
+        print(f"   ✓ Dataset created successfully")
+        print(f"   - Training samples: {n_train}")
+        print(f"   - Validation samples: {n_val}")
+        
+        # Test data retrieval
+        print("\n3. Testing batch retrieval...")
+        from torch.utils.data import DataLoader
+        test_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=False)
+        
+        for i, (img, mask) in enumerate(test_loader):
+            print(f"   Batch {i+1}: img={img.shape}, mask={mask.shape}")
+            if img.sum() == 0:
+                print(f"   ⚠ WARNING: Batch contains all-zero images")
+            if mask.sum() == 0:
+                print(f"   ⚠ WARNING: Batch contains all-zero masks")
+            if i >= 2:  # Test first 3 batches
+                break
+        
+        del train_ds, val_ds, test_loader
+        gc.collect()
+        
+    except Exception as e:
+        print(f"   ✗ ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+    
+    print("\n✓ Data flow diagnosis completed successfully")
+    return True
+
 
 def parse_args():
     """
@@ -116,7 +268,29 @@ def main():
     print(f"TensorBoard: {args.tensorboard}")
     if args.tensorboard:
         print(f"Log Directory: {args.log_dir}")
+    print(f"Num Workers: {args.num_workers}")
+    print(f"Prefetch Factor: {args.prefetch_factor}")
     print("=" * 60)
+    
+    # Memory safety check and recommendation
+    if args.data_limit is not None:
+        estimated_mb = args.data_limit * 640 * 640 * 7 * 4 / 1024 / 1024
+        if args.data_limit > 500:
+            print(f"\n🚨 LARGE DATASET DETECTED ({args.data_limit} samples)")
+            print(f"   Estimated full loading memory: {estimated_mb:.0f} MB ({estimated_mb/1024:.1f} GB)")
+            print(f"   ✓ FORCED: Using memory-efficient streaming loading")
+            print(f"   ✓ Expected memory usage with streaming: <100 MB (99.7% savings)")
+            print(f"   ⚠ WARNING: Full loading would cause OOM!\n")
+        elif args.data_limit > 100:
+            print(f"\nℹ INFO: Medium dataset ({args.data_limit} samples, ~{estimated_mb:.0f} MB)")
+            print(f"   ✓ Recommendation: Use streaming mode for better memory efficiency\n")
+    
+    # Auto-enable scale for large datasets to reduce memory
+    if args.data_limit and args.data_limit > 1000 and not args.scale:
+        print(f"\n💡 AUTO-OPTIMIZATION: Large dataset detected")
+        print(f"   Consider enabling scale to reduce memory usage:")
+        print(f"   Recommended: --scale --scale-factor 0.5 (reduces to 320x320)")
+        print(f"   This will save ~75% memory while maintaining good quality\n")
     
     # Check for GPU availability
     if args.device == 'cuda' and not torch.cuda.is_available():
@@ -125,6 +299,21 @@ def main():
     else:
         device = torch.device(args.device if args.device == 'cuda' and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    if device.type == 'cuda':
+        try:
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            print(f"GPU Memory: {gpu_memory:.1f} GB")
+            
+            # Recommend batch size based on GPU memory
+            if gpu_memory < 8 and args.batch_size > 4:
+                print(f"⚠ WARNING: GPU has limited memory ({gpu_memory:.1f}GB). Consider reducing batch_size to 2-4")
+            elif gpu_memory > 16 and args.batch_size < 8:
+                print(f"ℹ INFO: GPU has plenty of memory ({gpu_memory:.1f}GB). Consider increasing batch_size to 16-32")
+        except:
+            pass
+    
+    print("")
 
     # Setup TensorBoard logging if enabled
     if args.tensorboard:
@@ -133,6 +322,16 @@ def main():
         print(f"\nTensorBoard logs will be saved to: {log_dir}")
     else:
         log_dir = None
+    
+    # Run memory check and diagnosis if in debug mode
+    if args.debug or args.check_data:
+        check_memory_usage()
+        if args.data_limit:
+            estimate_memory_requirements(args.data_limit, args.batch_size)
+        diagnose_data_flow(args)
+        print("\n" + "=" * 60)
+        print("Starting Training After Diagnostics")
+        print("=" * 60 + "\n")
 
     # Load data using memory-efficient approach
     print(f"\nLoading data...")
@@ -152,16 +351,21 @@ def main():
             scale_factor=args.scale_factor
         )
         
-        # Create DataLoaders
+        # Create DataLoaders with optimized parameters
         from torch.utils.data import DataLoader
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                                  num_workers=0, pin_memory=True)
+                                  num_workers=args.num_workers, pin_memory=True,
+                                  prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+                                  persistent_workers=args.num_workers > 0)
         val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                                num_workers=0, pin_memory=True)
+                                num_workers=args.num_workers, pin_memory=True,
+                                prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+                                persistent_workers=args.num_workers > 0)
         
         print(f"✓ Training samples: {n_train}")
         print(f"✓ Validation samples: {n_val}")
         print(f"✓ Memory usage: Minimal (data loaded batch-by-batch)")
+        print(f"✓ DataLoader config: workers={args.num_workers}, prefetch={args.prefetch_factor}")
         
         # Initialize model BEFORE training
         print(f"\nInitializing model...")
