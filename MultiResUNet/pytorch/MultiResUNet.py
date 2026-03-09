@@ -490,8 +490,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             
             # Memory cleanup: Release batch tensors
             del Y_pred, loss
-            if (batch_count % 10 == 0) and (device.type == 'cuda'):
+            if (batch_count % 5 == 0) and (device.type == 'cuda'):
                 torch.cuda.empty_cache()
+                gc.collect()
 
         avg_loss = running_loss / batch_count
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
@@ -509,9 +510,17 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 val_loss += criterion(Y_pred, Y_batch).item()
                 val_batch_count += 1
                 
-                # Cleanup validation tensors
+                # Cleanup validation tensors immediately
                 del Y_pred
+            
+            # Force cleanup after validation loop
+            del X_batch, Y_batch
+        
         avg_val_loss = val_loss / val_batch_count
+        
+        # Clear validation memory before storing history
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
         
         # Store history
         history['train_loss'].append(avg_loss)
@@ -526,6 +535,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             writer.add_scalar('Metrics/dice', avg_dice, epoch+1)
             writer.add_scalar('Metrics/jaccard', avg_jaccard, epoch+1)
             writer.add_scalar('Learning_rate', current_lr, epoch+1)
+            writer.flush()  # Force flush to prevent memory buildup
         
         # Adjust learning rate based on validation loss
         scheduler.step(avg_val_loss)
@@ -558,11 +568,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 print(f"  Training loss: {avg_loss:.4f}")
                 print(f"  Validation loss: {avg_val_loss:.4f}")
         
-        # Periodic memory cleanup (every 10 epochs)
-        if (epoch + 1) % 10 == 0 and device.type == 'cuda':
+        # AGGRESSIVE memory cleanup after EVERY epoch
+        if device.type == 'cuda':
             torch.cuda.empty_cache()
             gc.collect()
-            print(f"  ✓ Memory cleanup completed")
+        
+        # Additional cleanup every 5 epochs (more frequent than before)
+        if (epoch + 1) % 5 == 0:
+            print(f"  ✓ Memory cleanup completed (epoch {epoch+1})")
 
     print("\nTraining complete.")
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
