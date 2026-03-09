@@ -458,6 +458,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     # Best model tracking
     best_val_dice = 0.0
     best_model_state = None
+    
+    # Initialize current_lr before training loop
+    current_lr = learning_rate
 
     for epoch in range(epochs):
         model.train()  # Set model to training mode
