@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from keras import backend as K
 import torch
 import argparse
+from datetime import datetime
 
 # Import the MultiResUNet model and utility functions
 from pytorch.MultiResUNet import MultiResUnet, dice_coef, jacard, saveModel, evaluateModel, trainStep
@@ -69,6 +70,10 @@ def parse_args():
                         help='Save model checkpoints during training')
     parser.add_argument('--save-dir', type=str, default='models',
                         help='Directory to save model checkpoints (default: models)')
+    parser.add_argument('--tensorboard', action='store_true',
+                        help='Enable TensorBoard logging')
+    parser.add_argument('--log-dir', type=str, default='runs/logs',
+                        help='Directory for TensorBoard logs (default: runs/logs)')
     
     # Debugging options
     parser.add_argument('--debug', action='store_true',
@@ -108,6 +113,9 @@ def main():
     print(f"Device: {args.device}")
     print(f"Debug Mode: {args.debug}")
     print(f"Data Validation: {args.check_data}")
+    print(f"TensorBoard: {args.tensorboard}")
+    if args.tensorboard:
+        print(f"Log Directory: {args.log_dir}")
     print("=" * 60)
     
     # Check for GPU availability
@@ -117,6 +125,14 @@ def main():
     else:
         device = torch.device(args.device if args.device == 'cuda' and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    # Setup TensorBoard logging if enabled
+    if args.tensorboard:
+        os.makedirs(args.log_dir, exist_ok=True)
+        log_dir = os.path.join(args.log_dir, f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        print(f"\nTensorBoard logs will be saved to: {log_dir}")
+    else:
+        log_dir = None
 
     # Load data using memory-efficient approach
     print(f"\nLoading data...")
@@ -176,7 +192,8 @@ def main():
             prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
-            verbose=args.verbose
+            verbose=args.verbose,
+            log_dir=log_dir  # Pass TensorBoard log directory
         )
     
     else:
@@ -243,7 +260,8 @@ def main():
             prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
-            verbose=args.verbose
+            verbose=args.verbose,
+            log_dir=log_dir  # Pass TensorBoard log directory
         )
     
     print("-" * 60)

@@ -22,6 +22,7 @@ set "INPUT_CHANNELS=3"
 set "OUTPUT_CHANNELS=4"
 set "GRADIENT_CLIP=1.0"
 set "DEVICE=cuda"
+set "TENSORBOARD=true"
 
 REM Parse command line arguments
 :parse_args
@@ -35,6 +36,8 @@ if /i "%~1"=="--input-channels" (set "INPUT_CHANNELS=%~2" & shift & shift & goto
 if /i "%~1"=="--output-channels" (set "OUTPUT_CHANNELS=%~2" & shift & shift & goto :parse_args)
 if /i "%~1"=="--gradient-clip" (set "GRADIENT_CLIP=%~2" & shift & shift & goto :parse_args)
 if /i "%~1"=="--device" (set "DEVICE=%~2" & shift & shift & goto :parse_args)
+if /i "%~1"=="--tensorboard" (set "TENSORBOARD=true" & shift & goto :parse_args)
+if /i "%~1"=="--no-tensorboard" (set "TENSORBOARD=false" & shift & goto :parse_args)
 if /i "%~1"=="--help" goto :show_help
 echo Unknown parameter passed: %~1
 exit /b 1
@@ -52,10 +55,12 @@ echo   --input-channels NUM   Number of input channels (default: 3)
 echo   --output-channels NUM  Number of output channels (default: 4)
 echo   --gradient-clip FLOAT  Gradient clipping threshold (default: 1.0)
 echo   --device DEVICE        Training device: cuda or cpu (default: cuda)
+echo   --tensorboard          Enable TensorBoard logging (default: true)
+echo   --no-tensorboard       Disable TensorBoard logging
 echo   --help                 Show this help message
 echo.
 echo Example:
-echo   %~nx0 --epochs 100 --batch-size 4 --data-limit 200
+echo   %~nx0 --epochs 100 --batch-size 4 --data-limit 200 --tensorboard
 exit /b 0
 
 :end_parse_args
@@ -87,6 +92,7 @@ echo   Input Channels: %INPUT_CHANNELS% | tee -a "%LOG_FILE%"
 echo   Output Channels: %OUTPUT_CHANNELS% | tee -a "%LOG_FILE%"
 echo   Gradient Clip: %GRADIENT_CLIP% | tee -a "%LOG_FILE%"
 echo   Device: %DEVICE% | tee -a "%LOG_FILE%"
+echo   TensorBoard: %TENSORBOARD% | tee -a "%LOG_FILE%"
 echo. | tee -a "%LOG_FILE%"
 
 REM Navigate to project directory
@@ -96,20 +102,32 @@ REM Run training and log output
 echo Starting training... | tee -a "%LOG_FILE%"
 echo ======================================== | tee -a "%LOG_FILE%"
 
-python train.py ^
-    --epochs %EPOCHS% ^
-    --batch-size %BATCH_SIZE% ^
-    --learning-rate %LEARNING_RATE% ^
-    --data-limit %DATA_LIMIT% ^
-    --validation-split %VALIDATION_SPLIT% ^
-    --input-channels %INPUT_CHANNELS% ^
-    --output-channels %OUTPUT_CHANNELS% ^
-    --gradient-clip %GRADIENT_CLIP% ^
-    --device %DEVICE% ^
-    --verbose ^
-    --save-model ^
-    --save-dir "%RUNS_DIR%\models" ^
-    --debug 2>&1 | tee -a "%LOG_FILE%"
+REM Build training command dynamically
+set "TRAIN_CMD=python train.py"
+set "TRAIN_CMD=%TRAIN_CMD% --epochs %EPOCHS%"
+set "TRAIN_CMD=%TRAIN_CMD% --batch-size %BATCH_SIZE%"
+set "TRAIN_CMD=%TRAIN_CMD% --learning-rate %LEARNING_RATE%"
+set "TRAIN_CMD=%TRAIN_CMD% --data-limit %DATA_LIMIT%"
+set "TRAIN_CMD=%TRAIN_CMD% --validation-split %VALIDATION_SPLIT%"
+set "TRAIN_CMD=%TRAIN_CMD% --input-channels %INPUT_CHANNELS%"
+set "TRAIN_CMD=%TRAIN_CMD% --output-channels %OUTPUT_CHANNELS%"
+set "TRAIN_CMD=%TRAIN_CMD% --gradient-clip %GRADIENT_CLIP%"
+set "TRAIN_CMD=%TRAIN_CMD% --device %DEVICE%"
+set "TRAIN_CMD=%TRAIN_CMD% --verbose"
+set "TRAIN_CMD=%TRAIN_CMD% --save-model"
+set "TRAIN_CMD=%TRAIN_CMD% --save-dir %RUNS_DIR%\models"
+set "TRAIN_CMD=%TRAIN_CMD% --debug"
+
+REM Add TensorBoard arguments if enabled
+if /i "%TENSORBOARD%"=="true" (
+    set "TRAIN_CMD=%TRAIN_CMD% --tensorboard"
+    set "TRAIN_CMD=%TRAIN_CMD% --log-dir %RUNS_DIR%\tensorboard"
+    echo TensorBoard logging enabled | tee -a "%LOG_FILE%"
+    echo   Log directory: %RUNS_DIR%\tensorboard | tee -a "%LOG_FILE%"
+)
+
+REM Execute training command
+%TRAIN_CMD% 2>&1 | tee -a "%LOG_FILE%"
 
 set "TRAIN_STATUS=%ERRORLEVEL%"
 

@@ -26,6 +26,7 @@ GRADIENT_CLIP=${GRADIENT_CLIP:-1.0}
 DEVICE=${DEVICE:-cuda}
 NUM_WORKERS=${NUM_WORKERS:-6}            # Optimized for 32-core CPU
 PREFETCH_FACTOR=${PREFETCH_FACTOR:-3}    # Increased prefetch for better performance
+TENSORBOARD=${TENSORBOARD:-true}         # Enable TensorBoard by default
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -41,6 +42,8 @@ while [[ "$#" -gt 0 ]]; do
         --device) DEVICE="$2"; shift ;;
         --num-workers) NUM_WORKERS="$2"; shift ;;
         --prefetch-factor) PREFETCH_FACTOR="$2"; shift ;;
+        --tensorboard) TENSORBOARD="true"; shift ;;
+        --no-tensorboard) TENSORBOARD="false"; shift ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -56,10 +59,12 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --device DEVICE        Training device: cuda or cpu (default: cuda)"
             echo "  --num-workers NUM      Number of data loading workers (default: 6 for 32-core CPU)"
             echo "  --prefetch-factor NUM  Batches prefetched per worker (default: 3)"
+            echo "  --tensorboard          Enable TensorBoard logging (default: true)"
+            echo "  --no-tensorboard       Disable TensorBoard logging"
             echo "  --help                 Show this help message"
             echo ""
             echo "Example:"
-            echo "  $0 --epochs 100 --batch-size 4 --data-limit 200"
+            echo "  $0 --epochs 100 --batch-size 4 --data-limit 200 --tensorboard"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -93,6 +98,7 @@ echo "  Input Channels: ${INPUT_CHANNELS}" | tee -a "$LOG_FILE"
 echo "  Output Channels: ${OUTPUT_CHANNELS}" | tee -a "$LOG_FILE"
 echo "  Gradient Clip: ${GRADIENT_CLIP}" | tee -a "$LOG_FILE"
 echo "  Device: ${DEVICE}" | tee -a "$LOG_FILE"
+echo "  TensorBoard: ${TENSORBOARD}" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Navigate to project directory
@@ -103,7 +109,7 @@ echo "Starting training..." | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 
 # Build training command with conditional data-limit handling
-TRAIN_CMD="python train.py"
+TRAIN_CMD="python -u train.py"
 TRAIN_CMD+=" --epochs ${EPOCHS}"
 TRAIN_CMD+=" --batch-size ${BATCH_SIZE}"
 TRAIN_CMD+=" --learning-rate ${LEARNING_RATE}"
@@ -124,6 +130,14 @@ TRAIN_CMD+=" --verbose"
 TRAIN_CMD+=" --save-model"
 TRAIN_CMD+=" --save-dir ${RUNS_DIR}/models"
 TRAIN_CMD+=" --debug"
+
+# Add TensorBoard arguments if enabled
+if [ "${TENSORBOARD}" = "true" ]; then
+    TRAIN_CMD+=" --tensorboard"
+    TRAIN_CMD+=" --log-dir ${RUNS_DIR}/tensorboard"
+    echo "TensorBoard logging enabled" | tee -a "$LOG_FILE"
+    echo "  Log directory: ${RUNS_DIR}/tensorboard" | tee -a "$LOG_FILE"
+fi
 
 # Execute the constructed command and log output
 eval $TRAIN_CMD 2>&1 | tee -a "$LOG_FILE"
@@ -174,11 +188,13 @@ Configuration:
   Output Channels: ${OUTPUT_CHANNELS}
   Gradient Clip: ${GRADIENT_CLIP}
   Device: ${DEVICE}
+  TensorBoard: ${TENSORBOARD}
 
 Files:
   Log: logs/training_${TIMESTAMP}.log
   Models: models/
   History: histories/history_${TIMESTAMP}.npy
+  TensorBoard: tensorboard/train_${TIMESTAMP}/ (if enabled)
   Backup: backup_${TIMESTAMP}.tar.gz
 
 Training Status: $([ $TRAIN_STATUS -eq 0 ] && echo "SUCCESS" || echo "FAILED (${TRAIN_STATUS})")
@@ -201,6 +217,15 @@ tar -czf "${BACKUP_FILE}" \
     [ -d "${RUNS_DIR}/models" ] && TAR_FILES+=("models")
     [ -f "${RUNS_DIR}/histories/history_${TIMESTAMP}.npy" ] && TAR_FILES+=("histories/history_${TIMESTAMP}.npy")
     TAR_FILES+=("manifest_${TIMESTAMP}.txt")
+    
+    # Add TensorBoard logs if they exist
+    if [ "${TENSORBOARD}" = "true" ] && [ -d "${RUNS_DIR}/tensorboard" ]; then
+        TB_DIR=$(ls -td ${RUNS_DIR}/tensorboard/train_* 2>/dev/null | head -1)
+        if [ -n "$TB_DIR" ]; then
+            TAR_FILES+=("${TB_DIR#${RUNS_DIR}/}")
+            echo "Including TensorBoard logs in backup..." | tee -a "$LOG_FILE"
+        fi
+    fi
     
     tar -czf "${BACKUP_FILE}" -C "${RUNS_DIR}" "${TAR_FILES[@]}" 2>/dev/null || {
         echo "Warning: Backup creation failed" | tee -a "$LOG_FILE"
@@ -233,6 +258,11 @@ echo "" | tee -a "$LOG_FILE"
 echo "To view the log file:" | tee -a "$LOG_FILE"
 echo "  cat ${LOG_FILE}" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
+if [ "${TENSORBOARD}" = "true" ]; then
+    echo "To view TensorBoard:" | tee -a "$LOG_FILE"
+    echo "  tensorboard --logdir ${RUNS_DIR}/tensorboard" | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
+fi
 echo "To extract the backup:" | tee -a "$LOG_FILE"
 echo "  tar -xzf ${BACKUP_FILE} -C /your/destination/" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"

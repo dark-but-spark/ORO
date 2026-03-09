@@ -350,7 +350,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               train_loader=None, val_loader=None, epochs=50, batch_size=2, device='cuda', 
               learning_rate=1e-4, gradient_clip=1.0, weight_decay=0,
               num_workers=4, prefetch_factor=2,
-              save_model=False, save_dir='models', verbose=False):
+              save_model=False, save_dir='models', verbose=False, log_dir=None):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -375,6 +375,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         save_model {bool} -- Whether to save model checkpoints (default: False)
         save_dir {str} -- Directory to save model checkpoints (default: 'models')
         verbose {bool} -- Enable verbose logging (default: False)
+        log_dir {str} -- Directory for TensorBoard logs (default: None)
     
     Returns:
         dict: Training history containing loss and metrics
@@ -384,6 +385,20 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     import torch.optim as optim
     import os
     import gc
+    
+    # Setup TensorBoard writer if log_dir is provided
+    if log_dir is not None:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            writer = SummaryWriter(log_dir=log_dir)
+            print(f"✓ TensorBoard logging enabled at: {log_dir}")
+        except ImportError:
+            print("⚠ WARNING: tensorboard not installed. Installing with: pip install tensorboard")
+            print("  Skipping TensorBoard logging...")
+            writer = None
+            log_dir = None
+    else:
+        writer = None
 
     # Convert device string to torch.device if needed
     if isinstance(device, str):
@@ -493,6 +508,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['val_jaccard'].append(avg_jaccard)
         history['val_loss'].append(avg_val_loss)
         
+        # Log to TensorBoard
+        if writer is not None:
+            writer.add_scalar('Loss/train', avg_loss, epoch+1)
+            writer.add_scalar('Loss/validation', avg_val_loss, epoch+1)
+            writer.add_scalar('Metrics/dice', avg_dice, epoch+1)
+            writer.add_scalar('Metrics/jaccard', avg_jaccard, epoch+1)
+            writer.add_scalar('Learning_rate', current_lr, epoch+1)
+        
         # Adjust learning rate based on validation loss
         scheduler.step(avg_val_loss)
         
@@ -528,6 +551,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
     print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
     print(f"Best Validation Dice: {best_val_dice:.4f}")
+    
+    # Close TensorBoard writer
+    if writer is not None:
+        writer.close()
+        print(f"✓ TensorBoard logs saved to: {log_dir}")
+        print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
     
     # Save training history
     import numpy as np
