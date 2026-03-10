@@ -353,14 +353,14 @@ def main():
         
         # Create DataLoaders with optimized parameters
         from torch.utils.data import DataLoader
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+        train_loader= DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                   num_workers=args.num_workers, pin_memory=True,
-                                  prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-                                  persistent_workers=args.num_workers > 0)
-        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                                num_workers=args.num_workers, pin_memory=True,
                                 prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-                                persistent_workers=args.num_workers > 0)
+                                persistent_workers=False)  # Disable to prevent memory leak
+        val_loader= DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                num_workers=args.num_workers, pin_memory=True,
+                              prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+                              persistent_workers=False)  # Disable to prevent memory leak
         
         print(f"✓ Training samples: {n_train}")
         print(f"✓ Validation samples: {n_val}")

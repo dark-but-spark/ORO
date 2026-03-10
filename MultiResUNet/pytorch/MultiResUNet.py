@@ -1,3 +1,5 @@
+from csv import writer
+
 import torch
 import torch.nn.functional as F
 
@@ -424,27 +426,28 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         # Use configurable workers for data loading
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
                                  num_workers=num_workers, pin_memory=True, 
-                                 prefetch_factor=prefetch_factor, persistent_workers=True)
-
-    if val_loader is None:
-        if X_val is None or Y_val is None:
-            raise ValueError("Either (X_val, Y_val) or val_loader must be provided")
+                               prefetch_factor=prefetch_factor if num_workers > 0 else None, 
+                               persistent_workers=False)  # Disable persistent workers to prevent memory leak
         
-        print(f"Converting validation data to tensors...")
-        X_val_tensor = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
-        Y_val_tensor = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
-        
-        # Clear NumPy arrays from memory
-        del X_val, Y_val
-        gc.collect()
-        
-        print(f"Validation tensor shape: {X_val_tensor.shape}")
-        val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
-        # Use configurable workers for validation data loading
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                               num_workers=num_workers, pin_memory=True, 
-                               prefetch_factor=prefetch_factor, persistent_workers=True)
-
+        if val_loader is None:
+            if X_val is None or Y_val is None:
+                raise ValueError("Either (X_val, Y_val) or val_loader must be provided")
+            
+            print(f"Converting validation data to tensors...")
+            X_val_tensor = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
+            Y_val_tensor = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
+            
+            # Clear NumPy arrays from memory
+            del X_val, Y_val
+            gc.collect()
+            
+            print(f"Validation tensor shape: {X_val_tensor.shape}")
+            val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
+            # Use configurable workers for validation data loading
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                                   num_workers=num_workers, pin_memory=True, 
+                                   prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                                   persistent_workers=False)  # Disable persistent workers
     # Define loss function and optimizer
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -488,13 +491,21 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             running_loss += loss.item()
             batch_count += 1
             
-            # Memory cleanup: Release batch tensors
-            del Y_pred, loss
+            # Memory cleanup: Release batch tensors IMMEDIATELY
+            del Y_pred, loss, X_batch, Y_batch
             if (batch_count % 5 == 0) and (device.type == 'cuda'):
                 torch.cuda.empty_cache()
-                gc.collect()
 
         avg_loss = running_loss / batch_count
+        
+        # AGGRESSIVE cleanup after training loop
+        try:
+            del X_batch, Y_batch
+        except:
+            pass
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
 
         # Evaluate on validation data (pass device for GPU acceleration)
@@ -510,17 +521,19 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 val_loss += criterion(Y_pred, Y_batch).item()
                 val_batch_count += 1
                 
-                # Cleanup validation tensors immediately
-                del Y_pred
+                # Cleanup validation tensors IMMEDIATELY
+                del Y_pred, X_batch, Y_batch
             
             # Force cleanup after validation loop
-            del X_batch, Y_batch
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
         
         avg_val_loss = val_loss / val_batch_count
         
-        # Clear validation memory before storing history
+        # AGGRESSIVE cleanup before storing history
         if device.type == 'cuda':
             torch.cuda.empty_cache()
+        gc.collect()  # Force Python garbage collection
         
         # Store history
         history['train_loss'].append(avg_loss)
@@ -568,14 +581,16 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 print(f"  Training loss: {avg_loss:.4f}")
                 print(f"  Validation loss: {avg_val_loss:.4f}")
         
-        # AGGRESSIVE memory cleanup after EVERY epoch
+        # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX)
         if device.type == 'cuda':
-            torch.cuda.empty_cache()
-            gc.collect()
+                torch.cuda.empty_cache()
+        gc.collect()  # FORCE Python garbage collection
         
-        # Additional cleanup every 5 epochs (more frequent than before)
-        if (epoch + 1) % 5 == 0:
-            print(f"  ✓ Memory cleanup completed (epoch {epoch+1})")
+        # Monitor memory every 10 epochs
+        if (epoch + 1) % 10 == 0 and device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated(device) / 1024**2
+            reserved = torch.cuda.memory_reserved(device) / 1024**2
+            print(f"  📊 GPU Memory: Allocated={allocated:.0f}MB, Reserved={reserved:.0f}MB")
 
     print("\nTraining complete.")
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
