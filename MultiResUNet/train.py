@@ -210,8 +210,8 @@ def parse_args():
                         help='Weight decay (L2 regularization) for optimizer (default: 0)')
     
     # Data loading optimization
-    parser.add_argument('--num-workers', type=int, default=4,
-                        help='Number of worker processes for data loading (default: 4). Increase to utilize more CPU cores')
+    parser.add_argument('--num-workers', type=int, default=0,
+                        help='Number of worker processes for data loading (default: 0). Increase to utilize more CPU cores')
     parser.add_argument('--prefetch-factor', type=int, default=2,
                         help='Number of batches loaded in advance by each worker (default: 2)')
     
