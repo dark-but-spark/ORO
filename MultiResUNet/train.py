@@ -351,21 +351,44 @@ def main():
             scale_factor=args.scale_factor
         )
         
-        # Create DataLoaders with optimized parameters
+        # Create DataLoaders with OPTIMIZED parameters for memory efficiency
         from torch.utils.data import DataLoader
-        train_loader= DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                                  num_workers=args.num_workers, pin_memory=True,
-                                prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-                                persistent_workers=False)  # Disable to prevent memory leak
-        val_loader= DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                                num_workers=args.num_workers, pin_memory=True,
-                              prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-                              persistent_workers=False)  # Disable to prevent memory leak
+        
+        # Calculate optimal num_workers based on CPU cores (leave 2 cores for system)
+        import os
+        cpu_count = os.cpu_count() or 4
+        optimal_workers = min(args.num_workers, max(1, cpu_count - 2))
+        
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=args.batch_size, 
+            shuffle=True,
+            num_workers=optimal_workers, 
+            pin_memory=True,
+            prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
+            persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
+            drop_last=False  # Keep last batch to avoid data waste
+        )
+        
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=args.batch_size, 
+            shuffle=False,
+            num_workers=optimal_workers, 
+            pin_memory=True,
+            prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
+            persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
+            drop_last=False
+        )
         
         print(f"✓ Training samples: {n_train}")
         print(f"✓ Validation samples: {n_val}")
         print(f"✓ Memory usage: Minimal (data loaded batch-by-batch)")
-        print(f"✓ DataLoader config: workers={args.num_workers}, prefetch={args.prefetch_factor}")
+        print(f"✓ Optimized DataLoader config:")
+        print(f"  - workers={optimal_workers} (auto-tuned from {args.num_workers})")
+        print(f"  - prefetch={args.prefetch_factor}")
+        print(f"  - persistent_workers=False (memory-safe)")
+        print(f"  - pin_memory=True (GPU transfer optimization)")
         
         # Initialize model BEFORE training
         print(f"\nInitializing model...")

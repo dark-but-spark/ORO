@@ -1,3 +1,4 @@
+import gc  # Added for aggressive garbage collection
 from csv import writer
 
 import torch
@@ -491,27 +492,33 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             running_loss += loss.item()
             batch_count += 1
             
-            # Memory cleanup: Release batch tensors IMMEDIATELY
+            # Memory cleanup: Release batch tensors IMMEDIATELY (AGGRESSIVE OPTIMIZATION)
             del Y_pred, loss, X_batch, Y_batch
-            if (batch_count % 5 == 0) and (device.type == 'cuda'):
+            
+            # CRITICAL: Clean up every 3 batches instead of 5 (more aggressive)
+            if (batch_count % 3 == 0) and (device.type == 'cuda'):
                 torch.cuda.empty_cache()
+                gc.collect()  # Force Python GC more frequently
 
         avg_loss = running_loss / batch_count
         
-        # AGGRESSIVE cleanup after training loop
+        # AGGRESSIVE cleanup after training loop (IMMEDIATE)
         try:
-            del X_batch, Y_batch
+           del X_batch, Y_batch
         except:
             pass
+        
+        # CRITICAL: Force cleanup GPU memory after EVERY epoch's training phase
         if device.type == 'cuda':
             torch.cuda.empty_cache()
+            gc.collect()  # Force Python GC to release any remaining references
         
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
 
         # Evaluate on validation data (pass device for GPU acceleration)
         avg_dice, avg_jaccard = evaluateModel(model, None, None, batch_size, device=device, val_loader=val_loader)
         
-        # Calculate validation loss
+        # Calculate validation loss (with AGGRESSIVE cleanup)
         val_loss = 0.0
         val_batch_count = 0
         with torch.no_grad():
@@ -521,21 +528,22 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 val_loss += criterion(Y_pred, Y_batch).item()
                 val_batch_count += 1
                 
-                # Cleanup validation tensors IMMEDIATELY
-                del Y_pred, X_batch, Y_batch
+                # Cleanup validation tensors IMMEDIATELY after each batch
+               del Y_pred, X_batch, Y_batch
             
-            # Force cleanup after validation loop
+            # Force cleanup after validation loop completes
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
+                gc.collect()  # Additional Python GC for validation phase
         
-        avg_val_loss = val_loss / val_batch_count
+        avg_val_loss = val_loss / max(val_batch_count, 1)  # Prevent division by zero
         
-        # AGGRESSIVE cleanup before storing history
+        # AGGRESSIVE cleanup before storing history (CRITICAL)
         if device.type == 'cuda':
             torch.cuda.empty_cache()
         gc.collect()  # Force Python garbage collection
         
-        # Store history
+        # Store history (after cleanup to prevent memory buildup)
         history['train_loss'].append(avg_loss)
         history['val_dice'].append(avg_dice)
         history['val_jaccard'].append(avg_jaccard)
@@ -581,16 +589,20 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 print(f"  Training loss: {avg_loss:.4f}")
                 print(f"  Validation loss: {avg_val_loss:.4f}")
         
-        # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX)
+        # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX - Enhanced)
         if device.type == 'cuda':
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
         gc.collect()  # FORCE Python garbage collection
         
-        # Monitor memory every 10 epochs
-        if (epoch + 1) % 10 == 0 and device.type == 'cuda':
+        # Monitor memory every 5 epochs (more frequent monitoring)
+        if (epoch + 1) % 5 == 0 and device.type == 'cuda':
             allocated = torch.cuda.memory_allocated(device) / 1024**2
             reserved = torch.cuda.memory_reserved(device) / 1024**2
-            print(f"  📊 GPU Memory: Allocated={allocated:.0f}MB, Reserved={reserved:.0f}MB")
+            print(f"  📊 GPU Memory Status: Allocated={allocated:.0f}MB, Reserved={reserved:.0f}MB")
+            
+            # Warning if memory usage is high
+            if allocated > 6000:  # 6GB threshold
+                print(f"  ⚠ WARNING: High GPU memory usage detected. Consider reducing batch_size.")
 
     print("\nTraining complete.")
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
