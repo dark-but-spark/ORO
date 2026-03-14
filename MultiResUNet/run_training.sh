@@ -14,6 +14,9 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_DIR="${PROJECT_DIR}/runs"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
+# Error log file (separate from main log)
+ERR_FILE="${RUNS_DIR}/logs/training_${TIMESTAMP}.err"
+
 # Default training parameters (OPTIMIZED for 3000-4000 samples @ 640x640)
 EPOCHS=${EPOCHS:-150}
 BATCH_SIZE=${BATCH_SIZE:-4}              # Reduced for large datasets
@@ -79,6 +82,62 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# Add missing parameters to align with train.py
+SCALE_ENABLED=${SCALE_ENABLED:-false}  # Enable image scaling
+SCALE_FACTOR=${SCALE_FACTOR:-0.5}      # Scale factor for images
+WEIGHT_DECAY=${WEIGHT_DECAY:-0}        # Weight decay (L2 regularization)
+LOG_DIR=${LOG_DIR:-${RUNS_DIR}/logs}   # Directory for TensorBoard logs
+CHECK_DATA=${CHECK_DATA:-false}        # Run data validation checks before training
+
+# Update command-line argument parsing to include new parameters
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --scale) SCALE_ENABLED="true"; shift ;;
+        --scale-factor) SCALE_FACTOR="$2"; shift ;;
+        --weight-decay) WEIGHT_DECAY="$2"; shift ;;
+        --log-dir) LOG_DIR="$2"; shift ;;
+        --check-data) CHECK_DATA="true"; shift ;;
+        --epochs) EPOCHS="$2"; shift ;;
+        --batch-size) BATCH_SIZE="$2"; shift ;;
+        --learning-rate) LEARNING_RATE="$2"; shift ;;
+        --data-limit) DATA_LIMIT="$2"; shift ;;
+        --validation-split) VALIDATION_SPLIT="$2"; shift ;;
+        --input-channels) INPUT_CHANNELS="$2"; shift ;;
+        --output-channels) OUTPUT_CHANNELS="$2"; shift ;;
+        --gradient-clip) GRADIENT_CLIP="$2"; shift ;;
+        --device) DEVICE="$2"; shift ;;
+        --num-workers) NUM_WORKERS="$2"; shift ;;
+        --prefetch-factor) PREFETCH_FACTOR="$2"; shift ;;
+        --tensorboard) TENSORBOARD="true"; shift ;;
+        --no-tensorboard) TENSORBOARD="false"; shift ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --epochs NUM           Number of training epochs (default: 50)"
+            echo "  --batch-size NUM       Batch size for training (default: 2)"
+            echo "  --learning-rate FLOAT  Learning rate (default: 1e-4)"
+            echo "  --data-limit NUM       Number of training samples (default: 100)"
+            echo "  --validation-split FLOAT Validation split ratio (default: 0.2)"
+            echo "  --input-channels NUM   Number of input channels (default: 3)"
+            echo "  --output-channels NUM  Number of output channels (default: 4)"
+            echo "  --gradient-clip FLOAT  Gradient clipping threshold (default: 1.0)"
+            echo "  --device DEVICE        Training device: cuda or cpu (default: cuda)"
+            echo "  --num-workers NUM      Number of data loading workers (default: 6 for 32-core CPU)"
+            echo "  --prefetch-factor NUM  Batches prefetched per worker (default: 3)"
+            echo "  --tensorboard          Enable TensorBoard logging (default: true)"
+            echo "  --no-tensorboard       Disable TensorBoard logging"
+            echo "  --help                 Show this help message"
+            echo ""
+            echo "Example:"
+            echo "  $0 --epochs 100 --batch-size 4 --data-limit 200 --tensorboard"
+            exit 0
+            ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+    esac
+    shift
+done
+
 # Create directories
 mkdir -p "${RUNS_DIR}"
 mkdir -p "${RUNS_DIR}/models"
@@ -87,11 +146,16 @@ mkdir -p "${RUNS_DIR}/histories"
 
 # Create log file with timestamp
 LOG_FILE="${RUNS_DIR}/logs/training_${TIMESTAMP}.log"
+
+# Initialize error log file
+touch "$ERR_FILE"
+
 echo "========================================" | tee "$LOG_FILE"
 echo "MultiResUNet Training Log" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "Timestamp: ${TIMESTAMP}" | tee -a "$LOG_FILE"
 echo "Project Directory: ${PROJECT_DIR}" | tee -a "$LOG_FILE"
+echo "Error Log File: ${ERR_FILE}" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
 # Print configuration
@@ -146,8 +210,9 @@ if [ "${TENSORBOARD}" = "true" ]; then
     echo "  Log directory: ${RUNS_DIR}/tensorboard" | tee -a "$LOG_FILE"
 fi
 
-# Execute the constructed command and log output
-eval $TRAIN_CMD 2>&1 | tee -a "$LOG_FILE"
+# Run training with separate error logging
+# All stdout goes to LOG_FILE, all stderr goes to ERR_FILE
+eval $TRAIN_CMD > >(tee -a "$LOG_FILE") 2> >(tee -a "$ERR_FILE" >&2)
 
 TRAIN_STATUS=$?
 
@@ -155,10 +220,19 @@ echo "" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 if [ $TRAIN_STATUS -eq 0 ]; then
     echo "Training completed successfully!" | tee -a "$LOG_FILE"
+    echo "Error log: ${ERR_FILE}" | tee -a "$LOG_FILE"
 else
-    echo "Training failed with status: ${TRAIN_STATUS}" | tee -a "$LOG_FILE"
+    echo "❌ Training failed with status: ${TRAIN_STATUS}" | tee -a "$LOG_FILE"
+    echo "⚠️  Check error log for details: ${ERR_FILE}" | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
+    echo "=== Last 50 lines of error log ===" | tee -a "$LOG_FILE"
+    if [ -s "$ERR_FILE" ]; then
+        tail -50 "$ERR_FILE" | tee -a "$LOG_FILE"
+    else
+        echo "(No errors recorded in .err file)" | tee -a "$LOG_FILE"
+    fi
+    echo "========================================" | tee -a "$LOG_FILE"
 fi
-echo "========================================" | tee -a "$LOG_FILE"
 
 # Copy training history if it exists
 if [ -f "training_history.npy" ]; then
