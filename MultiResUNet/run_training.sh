@@ -202,12 +202,30 @@ TRAIN_CMD+=" --save-model"
 TRAIN_CMD+=" --save-dir ${RUNS_DIR}/models"
 TRAIN_CMD+=" --debug"
 
-# Add TensorBoard arguments if enabled
+# If scaling is enabled, pass scale flags to train.py
+if [ "${SCALE_ENABLED}" = "true" ] || [ "${SCALE_ENABLED}" = "1" ]; then
+    TRAIN_CMD+=" --scale"
+    # Only add scale-factor if it's non-empty
+    if [ -n "${SCALE_FACTOR}" ]; then
+        TRAIN_CMD+=" --scale-factor ${SCALE_FACTOR}"
+    fi
+fi
+# Add TensorBoard arguments if enabled. Build a descriptive log dir
+TB_DIR=""
 if [ "${TENSORBOARD}" = "true" ]; then
+    TB_BASE="${RUNS_DIR}/tensorboard"
+    # Construct a directory name that includes runtime params
+    TB_DIR="${TB_BASE}/train_${TIMESTAMP}_e${EPOCHS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}"
+    if [ "${SCALE_ENABLED}" = "true" ] || [ "${SCALE_ENABLED}" = "1" ]; then
+        TB_DIR+="_scale${SCALE_FACTOR}"
+    fi
+    # Ensure directory exists and is unique
+    mkdir -p "${TB_DIR}"
+
     TRAIN_CMD+=" --tensorboard"
-    TRAIN_CMD+=" --log-dir ${RUNS_DIR}/tensorboard"
+    TRAIN_CMD+=" --log-dir ${TB_DIR}"
     echo "TensorBoard logging enabled" | tee -a "$LOG_FILE"
-    echo "  Log directory: ${RUNS_DIR}/tensorboard" | tee -a "$LOG_FILE"
+    echo "  Log directory: ${TB_DIR}" | tee -a "$LOG_FILE"
 fi
 
 # Run training with separate error logging
@@ -269,13 +287,14 @@ Configuration:
   Output Channels: ${OUTPUT_CHANNELS}
   Gradient Clip: ${GRADIENT_CLIP}
   Device: ${DEVICE}
-  TensorBoard: ${TENSORBOARD}
+    TensorBoard: ${TENSORBOARD}
+    TensorBoard Dir: ${TB_DIR:-None}
 
 Files:
   Log: logs/training_${TIMESTAMP}.log
   Models: models/
   History: histories/history_${TIMESTAMP}.npy
-  TensorBoard: tensorboard/train_${TIMESTAMP}/ (if enabled)
+    TensorBoard: ${TB_DIR:-(not enabled)}
   Backup: backup_${TIMESTAMP}.tar.gz
 
 Training Status: $([ $TRAIN_STATUS -eq 0 ] && echo "SUCCESS" || echo "FAILED (${TRAIN_STATUS})")

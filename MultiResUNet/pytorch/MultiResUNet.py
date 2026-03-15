@@ -353,7 +353,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               train_loader=None, val_loader=None, epochs=50, batch_size=2, device='cuda', 
               learning_rate=1e-4, gradient_clip=1.0, weight_decay=0,
               num_workers=4, prefetch_factor=2,
-              save_model=False, save_dir='models', verbose=False, log_dir=None):
+              save_model=False, save_dir='models', verbose=False, log_dir=None,
+              # additional run config for logging
+              scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
+              input_channels=3, output_channels=4):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -389,12 +392,45 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     import os
     import gc
     
-    # Setup TensorBoard writer if log_dir is provided
+    # Setup TensorBoard writer if log_dir is provided and record hyperparameters
     if log_dir is not None:
         try:
             from torch.utils.tensorboard import SummaryWriter
             writer = SummaryWriter(log_dir=log_dir)
             print(f"✓ TensorBoard logging enabled at: {log_dir}")
+
+            # Record run hyperparameters/config as JSON text and hparams
+            try:
+                import json
+                hparams = {
+                    'epochs': epochs,
+                    'batch_size': batch_size,
+                    'learning_rate': learning_rate,
+                    'gradient_clip': gradient_clip,
+                    'weight_decay': weight_decay,
+                    'num_workers': num_workers,
+                    'prefetch_factor': prefetch_factor,
+                    'save_model': save_model,
+                    'save_dir': save_dir,
+                    'scale': bool(scale),
+                    'scale_factor': scale_factor,
+                    'data_limit': data_limit,
+                    'validation_split': validation_split,
+                    'input_channels': input_channels,
+                    'output_channels': output_channels,
+                    'device': str(device)
+                }
+                # Add readable config text
+                writer.add_text('config', json.dumps(hparams, indent=2))
+                # Try to register hyperparameters (some TensorBoard versions create a separate hparam summary)
+                try:
+                    # add_hparams expects dict of simple values and a dict of metric scalars
+                    writer.add_hparams({k: v for k, v in hparams.items() if isinstance(v, (int, float, str, bool))}, {'hparam/placeholder_metric': 0})
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         except ImportError:
             print("⚠ WARNING: tensorboard not installed. Installing with: pip install tensorboard")
             print("  Skipping TensorBoard logging...")
@@ -529,7 +565,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 val_batch_count += 1
                 
                 # Cleanup validation tensors IMMEDIATELY after each batch
-               del Y_pred, X_batch, Y_batch
+                del Y_pred, X_batch, Y_batch
             
             # Force cleanup after validation loop completes
             if device.type == 'cuda':
@@ -609,9 +645,34 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
     print(f"Best Validation Dice: {best_val_dice:.4f}")
     
-    # Close TensorBoard writer
+    # Close TensorBoard writer and log final hparams/metrics
     if writer is not None:
-        writer.close()
+        try:
+            # Update hparams with final metrics if possible
+            final_metrics = {}
+            try:
+                final_metrics['final/val_dice'] = float(best_val_dice)
+                final_metrics['final/val_jaccard'] = float(history['val_jaccard'][-1])
+            except Exception:
+                pass
+            try:
+                if final_metrics:
+                    writer.add_hparams({k: v for k, v in (json.loads(writer.all_writers[0].event_writer._file_writer._file.name) if False else {}) if False else {}}, final_metrics)
+            except Exception:
+                # fallback: just write final metrics as text
+                try:
+                    import json
+                    writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        try:
+            writer.close()
+        except Exception:
+            pass
         print(f"✓ TensorBoard logs saved to: {log_dir}")
         print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
     

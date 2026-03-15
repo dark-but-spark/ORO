@@ -317,8 +317,9 @@ def main():
 
     # Setup TensorBoard logging if enabled
     if args.tensorboard:
-        os.makedirs(args.log_dir, exist_ok=True)
-        log_dir = os.path.join(args.log_dir, f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        # Use the provided log_dir directly (avoid double timestamp nesting)
+        log_dir = args.log_dir
+        os.makedirs(log_dir, exist_ok=True)
         print(f"\nTensorBoard logs will be saved to: {log_dir}")
     else:
         log_dir = None
@@ -420,7 +421,14 @@ def main():
             save_model=args.save_model,
             save_dir=args.save_dir,
             verbose=args.verbose,
-            log_dir=log_dir  # Pass TensorBoard log directory
+            log_dir=log_dir,  # Pass TensorBoard log directory
+            scale=args.scale,
+            scale_factor=args.scale_factor,
+            data_limit=args.data_limit,
+            validation_split=args.validation_split,
+            input_channels=args.input_channels,
+            output_channels=args.output_channels,
+        )
         )
     
     else:
@@ -488,7 +496,13 @@ def main():
             save_model=args.save_model,
             save_dir=args.save_dir,
             verbose=args.verbose,
-            log_dir=log_dir  # Pass TensorBoard log directory
+            log_dir=log_dir,  # Pass TensorBoard log directory
+            scale=args.scale,
+            scale_factor=args.scale_factor,
+            data_limit=args.data_limit,
+            validation_split=args.validation_split,
+            input_channels=args.input_channels,
+            output_channels=args.output_channels,
         )
     
     print("-" * 60)
