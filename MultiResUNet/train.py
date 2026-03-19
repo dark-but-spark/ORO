@@ -429,7 +429,6 @@ def main():
             input_channels=args.input_channels,
             output_channels=args.output_channels,
         )
-        )
     
     else:
         # Option 2: Use traditional approach for small datasets (< 500 samples)
