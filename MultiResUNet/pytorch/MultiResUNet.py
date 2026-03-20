@@ -657,7 +657,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 pass
             try:
                 if final_metrics:
-                    writer.add_hparams({k: v for k, v in (json.loads(writer.all_writers[0].event_writer._file_writer._file.name) if False else {}) if False else {}}, final_metrics)
+                    # Simplified hparams logging - avoid complex introspection
+                    hparams = {
+                        'epochs': epochs,
+                        'batch_size': batch_size,
+                        'learning_rate': learning_rate,
+                        'gradient_clip': gradient_clip
+                    }
+                    writer.add_hparams(hparams, final_metrics)
             except Exception:
                 # fallback: just write final metrics as text
                 try:
