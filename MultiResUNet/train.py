@@ -356,7 +356,6 @@ def main():
         from torch.utils.data import DataLoader
         
         # Calculate optimal num_workers based on CPU cores (leave 2 cores for system)
-        import os
         cpu_count = os.cpu_count() or 4
         optimal_workers = min(args.num_workers, max(1, cpu_count - 2))
         
