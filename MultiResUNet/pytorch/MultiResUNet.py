@@ -648,35 +648,48 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     # Close TensorBoard writer and log final hparams/metrics
     if writer is not None:
         try:
-            # Update hparams with final metrics if possible
-            final_metrics = {}
+            # Update hparams with FINAL metrics (CRITICAL FIX)
+            # This should be done ONCE at the end, replacing the placeholder
+            final_metrics = {
+                'final/val_dice': float(best_val_dice),
+                'final/val_jaccard': float(history['val_jaccard'][-1]),
+                'final/train_loss': float(history['train_loss'][-1]) if history['train_loss'] else 0.0,
+                'final/val_loss': float(history['val_loss'][-1]) if history['val_loss'] else 0.0
+            }
+            
+            # Use COMPLETE hparams (all training parameters)
+            hparams = {
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+                'gradient_clip': gradient_clip,
+                'weight_decay': weight_decay,
+                'num_workers': num_workers,
+                'prefetch_factor': prefetch_factor,
+                'save_model': save_model,
+                'scale': bool(scale),
+                'scale_factor': scale_factor,
+                'data_limit': data_limit,
+                'validation_split': validation_split,
+                'input_channels': input_channels,
+                'output_channels': output_channels,
+                'device': str(device)
+            }
+            
+            # Log final hparams with real metrics (replaces placeholder)
+            writer.add_hparams(hparams, final_metrics)
+            
+        except Exception as e:
+            # Fallback: write final metrics as text
             try:
-                final_metrics['final/val_dice'] = float(best_val_dice)
-                final_metrics['final/val_jaccard'] = float(history['val_jaccard'][-1])
+                import json
+                writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
+                print(f"⚠ WARNING: add_hparams failed, using text fallback: {e}")
             except Exception:
                 pass
-            try:
-                if final_metrics:
-                    # Simplified hparams logging - avoid complex introspection
-                    hparams = {
-                        'epochs': epochs,
-                        'batch_size': batch_size,
-                        'learning_rate': learning_rate,
-                        'gradient_clip': gradient_clip
-                    }
-                    writer.add_hparams(hparams, final_metrics)
-            except Exception:
-                # fallback: just write final metrics as text
-                try:
-                    import json
-                    writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
-                except Exception:
-                    pass
-
-        except Exception:
-            pass
 
         try:
+            writer.flush()  # Ensure all data is written before closing
             writer.close()
         except Exception:
             pass
