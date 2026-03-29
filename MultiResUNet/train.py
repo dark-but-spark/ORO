@@ -233,6 +233,20 @@ def parse_args():
     parser.add_argument('--check-data', action='store_true',
                         help='Run data validation checks before training')
     
+    # Loss function options - for sparse/imbalanced datasets
+    parser.add_argument('--use-focal-loss', action='store_true',
+                        help='Use Focal Loss instead of BCE (recommended for sparse/imbalanced datasets)')
+    parser.add_argument('--focal-alpha', type=float, default=0.25,
+                        help='Focal Loss alpha parameter: weighting factor for positive/negative samples (default: 0.25)')
+    parser.add_argument('--focal-gamma', type=float, default=2.0,
+                        help='Focal Loss gamma parameter: focusing parameter to down-weight easy examples (default: 2.0)')
+    parser.add_argument('--use-combined-loss', action='store_true',
+                        help='Use combined BCE/Focal + Dice Loss for balanced training')
+    parser.add_argument('--bce-weight', type=float, default=0.5,
+                        help='Weight for BCE/Focal loss in combined loss (default: 0.5)')
+    parser.add_argument('--dice-weight', type=float, default=0.5,
+                        help='Weight for Dice loss in combined loss (default: 0.5)')
+    
     # Device selection
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
@@ -427,6 +441,13 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            # Loss function configuration for sparse/imbalanced datasets
+            use_focal_loss=args.use_focal_loss,
+            focal_alpha=args.focal_alpha,
+            focal_gamma=args.focal_gamma,
+            use_combined_loss=args.use_combined_loss,
+            bce_weight=args.bce_weight,
+            dice_weight=args.dice_weight,
         )
     
     else:
@@ -501,6 +522,13 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            # Loss function configuration for sparse/imbalanced datasets
+            use_focal_loss=args.use_focal_loss,
+            focal_alpha=args.focal_alpha,
+            focal_gamma=args.focal_gamma,
+            use_combined_loss=args.use_combined_loss,
+            bce_weight=args.bce_weight,
+            dice_weight=args.dice_weight,
         )
     
     print("-" * 60)

@@ -2,7 +2,111 @@ import gc  # Added for aggressive garbage collection
 from csv import writer
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for handling class imbalance in semantic segmentation
+    
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Arguments:
+        alpha {float} -- Weighting factor for positive/negative samples (default: 0.25)
+        gamma {float} -- Focusing parameter to down-weight easy examples (default: 2.0)
+        reduction {str} -- Reduction type: 'mean', 'sum', or 'none' (default: 'mean')
+    
+    Reference:
+        Lin, T.Y., Goyal, P., Girshick, R., He, K. and Dollar, P., 2017. 
+        Focal loss for dense object detection. ICCV 2017.
+    """
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        # Sigmoid activation
+        p = torch.sigmoid(inputs)
+        
+        # Compute binary cross entropy with logits (more numerically stable)
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        
+        # Compute focal weight: (1 - p_t)^gamma
+        # p_t = p * target + (1 - p) * (1 - target)
+        p_t = p * targets + (1 - p) * (1 - targets)
+        focal_weight = (1 - p_t) ** self.gamma
+        
+        # Apply alpha weighting
+        alpha_factor = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        
+        # Final focal loss
+        focal_loss = alpha_factor * focal_weight * bce_loss
+        
+        # Reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for direct optimization of Dice coefficient
+    Works well for imbalanced segmentation tasks
+    
+    Arguments:
+        smooth {float} -- Smoothing factor to avoid division by zero (default: 1.0)
+    """
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+    
+    def forward(self, inputs, targets):
+        # Sigmoid activation
+        inputs = torch.sigmoid(inputs)
+        
+        # Flatten tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        # Compute Dice coefficient
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        
+        return 1 - dice
+
+
+class CombinedLoss(nn.Module):
+    """
+    Combined Loss (BCE/Focal + Dice) for balanced training
+    
+    Arguments:
+        bce_weight {float} -- Weight for BCE/Focal loss (default: 0.5)
+        dice_weight {float} -- Weight for Dice loss (default: 0.5)
+        use_focal {bool} -- Use Focal Loss instead of BCE (default: False)
+        alpha {float} -- Focal Loss alpha parameter (default: 0.25)
+        gamma {float} -- Focal Loss gamma parameter (default: 2.0)
+    """
+    def __init__(self, bce_weight=0.5, dice_weight=0.5, use_focal=False, alpha=0.25, gamma=2.0):
+        super(CombinedLoss, self).__init__()
+        self.bce_weight = bce_weight
+        self.dice_weight = dice_weight
+        
+        if use_focal:
+            self.bce_loss = FocalLoss(alpha=alpha, gamma=gamma)
+        else:
+            self.bce_loss = nn.BCEWithLogitsLoss()
+        
+        self.dice_loss = DiceLoss(smooth=1.0)
+    
+    def forward(self, inputs, targets):
+        bce = self.bce_loss(inputs, targets)
+        dice = self.dice_loss(inputs, targets)
+        return self.bce_weight * bce + self.dice_weight * dice
 
 
 class Conv2d_batchnorm(torch.nn.Module):
@@ -356,7 +460,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               save_model=False, save_dir='models', verbose=False, log_dir=None,
               # additional run config for logging
               scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
-              input_channels=3, output_channels=4):
+              input_channels=3, output_channels=4,
+              # loss function configuration
+              use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
+              use_combined_loss=False, bce_weight=0.5, dice_weight=0.5):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -382,321 +489,282 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         save_dir {str} -- Directory to save model checkpoints (default: 'models')
         verbose {bool} -- Enable verbose logging (default: False)
         log_dir {str} -- Directory for TensorBoard logs (default: None)
+        use_focal_loss {bool} -- Use Focal Loss instead of BCE (default: False, recommended for sparse/imbalanced datasets)
+        focal_alpha {float} -- Focal Loss alpha parameter (default: 0.25)
+        focal_gamma {float} -- Focal Loss gamma parameter (default: 2.0)
+        use_combined_loss {bool} -- Use combined BCE/Focal + Dice Loss (default: False)
+        bce_weight {float} -- Weight for BCE/Focal loss in combined loss (default: 0.5)
+        dice_weight {float} -- Weight for Dice loss in combined loss (default: 0.5)
     
     Returns:
         dict: Training history containing loss and metrics
     """
-    from torch.utils.data import DataLoader, TensorDataset
-    import torch.nn as nn
+    import torch
     import torch.optim as optim
-    import os
-    import gc
+    from torch.utils.data import DataLoader, TensorDataset
+
+    # Move model to the specified device
+    device = torch.device(device)
+    model.to(device)
+
+    # Create DataLoader if not provided
+    if train_loader is None:
+        if X_train is None or Y_train is None:
+            raise ValueError("Either (X_train, Y_train) or train_loader must be provided")
+        
+        # Convert numpy arrays to tensors if needed
+        if not isinstance(X_train, torch.Tensor):
+            X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
+        if not isinstance(Y_train, torch.Tensor):
+            Y_train = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2)
+        
+        train_dataset = TensorDataset(X_train, Y_train)
+        
+        # Handle prefetch_factor for num_workers=0
+        loader_kwargs = {
+            'batch_size': batch_size,
+            'shuffle': True,
+            'num_workers': num_workers,
+            'pin_memory': True,
+            'persistent_workers': False
+        }
+        if num_workers > 0 and prefetch_factor is not None:
+            loader_kwargs['prefetch_factor'] = prefetch_factor
+        
+        train_loader = DataLoader(train_dataset, **loader_kwargs)
     
-    # Setup TensorBoard writer if log_dir is provided and record hyperparameters
+    if val_loader is None:
+        if X_val is None or Y_val is None:
+            raise ValueError("Either (X_val, Y_val) or val_loader must be provided")
+        
+        # Convert numpy arrays to tensors if needed
+        if not isinstance(X_val, torch.Tensor):
+            X_val = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
+        if not isinstance(Y_val, torch.Tensor):
+            Y_val = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
+        
+        val_dataset = TensorDataset(X_val, Y_val)
+        
+        # Handle prefetch_factor for num_workers=0
+        val_loader_kwargs = {
+            'batch_size': batch_size,
+            'shuffle': False,
+            'num_workers': num_workers,
+            'pin_memory': True,
+            'persistent_workers': False
+        }
+        if num_workers > 0 and prefetch_factor is not None:
+            val_loader_kwargs['prefetch_factor'] = prefetch_factor
+        
+        val_loader = DataLoader(val_dataset, **val_loader_kwargs)
+    
+    # Define loss function and optimizer
+    # Use Focal Loss or Combined Loss for sparse/imbalanced datasets
+    if use_combined_loss:
+        print(f"\nUsing Combined Loss (BCE/Focal + Dice)")
+        print(f"  BCE/Focal weight: {bce_weight:.1f}")
+        print(f"  Dice weight: {dice_weight:.1f}")
+        if use_focal_loss:
+            print(f"  Using Focal Loss with alpha={focal_alpha}, gamma={focal_gamma}")
+        criterion = CombinedLoss(
+            bce_weight=bce_weight, 
+            dice_weight=dice_weight,
+            use_focal=use_focal_loss,
+            alpha=focal_alpha,
+            gamma=focal_gamma
+        )
+    elif use_focal_loss:
+        print(f"\nUsing Focal Loss (recommended for sparse/imbalanced datasets)")
+        print(f"  Alpha: {focal_alpha}, Gamma: {focal_gamma}")
+        criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+    else:
+        print(f"\nUsing BCEWithLogitsLoss")
+        criterion = nn.BCEWithLogitsLoss()
+    
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # Learning rate scheduler - Use Cosine Annealing for better stability on sparse data
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+    
+    # Setup TensorBoard writer if log_dir is provided
+    writer = None
     if log_dir is not None:
         try:
             from torch.utils.tensorboard import SummaryWriter
             writer = SummaryWriter(log_dir=log_dir)
-            print(f"✓ TensorBoard logging enabled at: {log_dir}")
-
-            # Record run hyperparameters/config as JSON text and hparams
+            print(f"\n✓ TensorBoard logging enabled at: {log_dir}")
+            
+            # Record comprehensive hyperparameters and configuration
             try:
                 import json
+                
+                # Construct complete hyperparameter dictionary
                 hparams = {
+                    # Training hyperparameters
                     'epochs': epochs,
                     'batch_size': batch_size,
                     'learning_rate': learning_rate,
                     'gradient_clip': gradient_clip,
                     'weight_decay': weight_decay,
+                    
+                    # DataLoader parameters
                     'num_workers': num_workers,
                     'prefetch_factor': prefetch_factor,
-                    'save_model': save_model,
-                    'save_dir': save_dir,
-                    'scale': bool(scale),
-                    'scale_factor': scale_factor,
-                    'data_limit': data_limit,
-                    'validation_split': validation_split,
+                    
+                    # Model architecture
                     'input_channels': input_channels,
                     'output_channels': output_channels,
-                    'device': str(device)
+                    
+                    # Data configuration
+                    'data_limit': data_limit if data_limit else -1,  # -1 means all data
+                    'validation_split': validation_split,
+                    'scale': bool(scale),
+                    'scale_factor': scale_factor,
+                    
+                    # Loss function configuration
+                    'use_focal_loss': use_focal_loss,
+                    'focal_alpha': focal_alpha,
+                    'focal_gamma': focal_gamma,
+                    'use_combined_loss': use_combined_loss,
+                    'bce_weight': bce_weight,
+                    'dice_weight': dice_weight,
+                    
+                    # Device info
+                    'device': str(device),
                 }
-                # Add readable config text
-                writer.add_text('config', json.dumps(hparams, indent=2))
-                # Try to register hyperparameters (some TensorBoard versions create a separate hparam summary)
-                try:
-                    # add_hparams expects dict of simple values and a dict of metric scalars
-                    writer.add_hparams({k: v for k, v in hparams.items() if isinstance(v, (int, float, str, bool))}, {'hparam/placeholder_metric': 0})
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
+                
+                # Add readable config text to TensorBoard
+                config_text = json.dumps(hparams, indent=2)
+                writer.add_text('Training_Config', config_text)
+                
+                # Register hyperparameters for comparison
+                filtered_hparams = {
+                    k: v for k, v in hparams.items() 
+                    if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
+                }
+                
+                # Add placeholder metric for hparams registration
+                writer.add_hparams(
+                    filtered_hparams,
+                    {'hparam/placeholder': 0.0}
+                )
+                
+                # Flush immediately to ensure data is written
+                writer.flush()
+                
+                print(f"  ✓ Hyperparameters recorded")
+                
+            except Exception as e:
+                print(f"  ⚠ Warning: Failed to record hyperparameters: {e}")
+                
         except ImportError:
-            print("⚠ WARNING: tensorboard not installed. Installing with: pip install tensorboard")
-            print("  Skipping TensorBoard logging...")
+            print("\n⚠ WARNING: TensorBoard not installed. Install with: pip install tensorboard")
             writer = None
-            log_dir = None
-    else:
-        writer = None
-
-    # Convert device string to torch.device if needed
-    if isinstance(device, str):
-        device = torch.device(device)
-    
-    # Create DataLoaders if not provided
-    # Priority: 1) Provided loaders, 2) NumPy arrays
-    if train_loader is None:
-        if X_train is None or Y_train is None:
-            raise ValueError("Either (X_train, Y_train) or train_loader must be provided")
-        
-        # Convert NumPy arrays to PyTorch tensors
-        print(f"Converting training data to tensors...")
-        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
-        Y_train_tensor = torch.tensor(Y_train, dtype=torch.float32).permute(0, 3, 1, 2)
-        
-        # Clear NumPy arrays from memory
-        del X_train, Y_train
-        gc.collect()
-        
-        print(f"Training tensor shape: {X_train_tensor.shape}")
-        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-        # Use configurable workers for data loading
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                                 num_workers=num_workers, pin_memory=True, 
-                               prefetch_factor=prefetch_factor if num_workers > 0 else None, 
-                               persistent_workers=False)  # Disable persistent workers to prevent memory leak
-        
-        if val_loader is None:
-            if X_val is None or Y_val is None:
-                raise ValueError("Either (X_val, Y_val) or val_loader must be provided")
-            
-            print(f"Converting validation data to tensors...")
-            X_val_tensor = torch.tensor(X_val, dtype=torch.float32).permute(0, 3, 1, 2)
-            Y_val_tensor = torch.tensor(Y_val, dtype=torch.float32).permute(0, 3, 1, 2)
-            
-            # Clear NumPy arrays from memory
-            del X_val, Y_val
-            gc.collect()
-            
-            print(f"Validation tensor shape: {X_val_tensor.shape}")
-            val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
-            # Use configurable workers for validation data loading
-            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                                   num_workers=num_workers, pin_memory=True, 
-                                   prefetch_factor=prefetch_factor if num_workers > 0 else None,
-                                   persistent_workers=False)  # Disable persistent workers
-    # Define loss function and optimizer
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-    
-    # Training history
-    history = {'train_loss': [], 'val_dice': [], 'val_jaccard': [], 'val_loss': []}
-    
-    # Best model tracking
-    best_val_dice = 0.0
-    best_model_state = None
+        except Exception as e:
+            print(f"\n⚠ WARNING: Failed to initialize TensorBoard: {e}")
+            writer = None
     
     # Initialize current_lr before training loop
     current_lr = learning_rate
-
+    
+    # Training loop
+    history = {'loss': [], 'dice': [], 'jaccard': []}
     for epoch in range(epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
-        batch_count = 0
+        total_dice = 0.0
+        total_jaccard = 0.0
+        num_batches = 0
 
         for X_batch, Y_batch in train_loader:
-            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
-
-            optimizer.zero_grad()  # Zero the gradients
+            # Move batch to device if specified
+            if device is not None:
+                X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+            
+            # Zero the parameter gradients
+            optimizer.zero_grad()
 
             # Forward pass
             Y_pred = model(X_batch)
-
-            # Compute loss
             loss = criterion(Y_pred, Y_batch)
-            loss.backward()  # Backpropagation
-            
-            # Gradient clipping to prevent exploding gradients
+
+            # Backward pass and optimize
+            loss.backward()
             if gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip)
-            
-            optimizer.step()  # Update weights
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+            optimizer.step()
+
+            # Compute metrics on raw probabilities (more stable)
+            Y_pred_prob = torch.sigmoid(Y_pred)
+            Y_pred_binary = (Y_pred_prob >= 0.5).float()
+            dice = dice_coef(Y_batch, Y_pred_binary)
+            jaccard = jacard(Y_batch, Y_pred_binary)
 
             running_loss += loss.item()
-            batch_count += 1
-            
-            # Memory cleanup: Release batch tensors IMMEDIATELY (AGGRESSIVE OPTIMIZATION)
-            del Y_pred, loss, X_batch, Y_batch
-            
-            # CRITICAL: Clean up every 3 batches instead of 5 (more aggressive)
-            if (batch_count % 3 == 0) and (device.type == 'cuda'):
-                torch.cuda.empty_cache()
-                gc.collect()  # Force Python GC more frequently
+            total_dice += dice.item()
+            total_jaccard += jaccard.item()
+            num_batches += 1
 
-        avg_loss = running_loss / batch_count
-        
-        # AGGRESSIVE cleanup after training loop (IMMEDIATE)
-        try:
-           del X_batch, Y_batch
-        except:
-            pass
-        
-        # CRITICAL: Force cleanup GPU memory after EVERY epoch's training phase
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-            gc.collect()  # Force Python GC to release any remaining references
-        
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}")
+        epoch_loss = running_loss / num_batches
+        epoch_dice = total_dice / num_batches
+        epoch_jaccard = total_jaccard / num_batches
 
-        # Evaluate on validation data (pass device for GPU acceleration)
-        avg_dice, avg_jaccard = evaluateModel(model, None, None, batch_size, device=device, val_loader=val_loader)
+        # Evaluate on validation set
+        val_dice, val_jaccard = evaluateModel(model, val_loader=val_loader, device=device)
+
+        # Update history
+        history['loss'].append(epoch_loss)
+        history['dice'].append(epoch_dice)
+        history['jaccard'].append(epoch_jaccard)
+
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
         
-        # Calculate validation loss (with AGGRESSIVE cleanup)
-        val_loss = 0.0
-        val_batch_count = 0
-        with torch.no_grad():
-            for X_batch, Y_batch in val_loader:
-                X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
-                Y_pred = model(X_batch)
-                val_loss += criterion(Y_pred, Y_batch).item()
-                val_batch_count += 1
-                
-                # Cleanup validation tensors IMMEDIATELY after each batch
-                del Y_pred, X_batch, Y_batch
-            
-            # Force cleanup after validation loop completes
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
-                gc.collect()  # Additional Python GC for validation phase
-        
-        avg_val_loss = val_loss / max(val_batch_count, 1)  # Prevent division by zero
-        
-        # AGGRESSIVE cleanup before storing history (CRITICAL)
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-        gc.collect()  # Force Python garbage collection
-        
-        # Store history (after cleanup to prevent memory buildup)
-        history['train_loss'].append(avg_loss)
-        history['val_dice'].append(avg_dice)
-        history['val_jaccard'].append(avg_jaccard)
-        history['val_loss'].append(avg_val_loss)
+        # Print epoch summary with improved formatting (always show, not just in verbose mode)
+        print(f"\nEpoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.4f}")
+        print(f"Average Dice Coefficient: {epoch_dice:.4f}")
+        print(f"Average Jaccard Index: {epoch_jaccard:.4f}")
+        print(f"  Current learning rate: {current_lr:.6f}")
+        print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
         
         # Log to TensorBoard
         if writer is not None:
-            writer.add_scalar('Loss/train', avg_loss, epoch+1)
-            writer.add_scalar('Loss/validation', avg_val_loss, epoch+1)
-            writer.add_scalar('Metrics/dice', avg_dice, epoch+1)
-            writer.add_scalar('Metrics/jaccard', avg_jaccard, epoch+1)
-            writer.add_scalar('Learning_rate', current_lr, epoch+1)
-            writer.flush()  # Force flush to prevent memory buildup
-        
-        # Adjust learning rate based on validation loss
-        scheduler.step(avg_val_loss)
-        
-        # Print learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"  Current learning rate: {current_lr:.6f}")
-        print(f"  Validation Dice: {avg_dice:.4f}, Jaccard: {avg_jaccard:.4f}")
-        
-        # Save best model
-        if save_model and avg_dice > best_val_dice:
-            best_val_dice = avg_dice
-            os.makedirs(save_dir, exist_ok=True)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_dice': avg_dice,
-                'val_jaccard': avg_jaccard,
-                'val_loss': avg_val_loss,
-            }, os.path.join(save_dir, 'best_model_checkpoint.pth'))
-            print(f"  ✓ New best model saved! (Dice: {avg_dice:.4f})")
-        
-        # Early stopping check
-        if epoch > 10 and avg_dice < 0.01:
-            print(f"\n⚠ WARNING: Dice coefficient is very low after {epoch+1} epochs.")
-            print("Consider checking data quality or adjusting hyperparameters.")
-            if verbose:
-                print("Debug info:")
-                print(f"  Training loss: {avg_loss:.4f}")
-                print(f"  Validation loss: {avg_val_loss:.4f}")
-        
-        # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX - Enhanced)
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-        gc.collect()  # FORCE Python garbage collection
-        
-        # Monitor memory every 5 epochs (more frequent monitoring)
-        if (epoch + 1) % 5 == 0 and device.type == 'cuda':
-            allocated = torch.cuda.memory_allocated(device) / 1024**2
-            reserved = torch.cuda.memory_reserved(device) / 1024**2
-            print(f"  📊 GPU Memory Status: Allocated={allocated:.0f}MB, Reserved={reserved:.0f}MB")
-            
-            # Warning if memory usage is high
-            if allocated > 6000:  # 6GB threshold
-                print(f"  ⚠ WARNING: High GPU memory usage detected. Consider reducing batch_size.")
+            try:
+                writer.add_scalar('Loss/train', epoch_loss, epoch+1)
+                writer.add_scalar('Loss/validation', val_dice, epoch+1)  # Using dice as proxy for validation loss
+                writer.add_scalar('Metrics/dice', epoch_dice, epoch+1)
+                writer.add_scalar('Metrics/jaccard', epoch_jaccard, epoch+1)
+                writer.add_scalar('Metrics/val_dice', val_dice, epoch+1)
+                writer.add_scalar('Metrics/val_jaccard', val_jaccard, epoch+1)
+                writer.add_scalar('Learning_rate', current_lr, epoch+1)
+                writer.flush()  # Force flush to prevent memory buildup
+            except Exception as e:
+                if epoch == 0:  # Only warn once
+                    print(f"⚠ WARNING: Failed to write to TensorBoard: {e}")
+
+        # Save model checkpoint
+        if save_model:
+            saveModel(model, model_dir=save_dir)
+
+        # Update learning rate
+        scheduler.step()
 
     print("\nTraining complete.")
-    print(f"Final Dice: {history['val_dice'][-1]:.4f}")
-    print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
-    print(f"Best Validation Dice: {best_val_dice:.4f}")
+    print(f"Final Dice: {history['dice'][-1]:.4f}")
+    print(f"Final Jaccard: {history['jaccard'][-1]:.4f}")
     
-    # Close TensorBoard writer and log final hparams/metrics
+    # Close TensorBoard writer
     if writer is not None:
         try:
-            # Update hparams with FINAL metrics (CRITICAL FIX)
-            # This should be done ONCE at the end, replacing the placeholder
-            final_metrics = {
-                'final/val_dice': float(best_val_dice),
-                'final/val_jaccard': float(history['val_jaccard'][-1]),
-                'final/train_loss': float(history['train_loss'][-1]) if history['train_loss'] else 0.0,
-                'final/val_loss': float(history['val_loss'][-1]) if history['val_loss'] else 0.0
-            }
-            
-            # Use COMPLETE hparams (all training parameters)
-            hparams = {
-                'epochs': epochs,
-                'batch_size': batch_size,
-                'learning_rate': learning_rate,
-                'gradient_clip': gradient_clip,
-                'weight_decay': weight_decay,
-                'num_workers': num_workers,
-                'prefetch_factor': prefetch_factor,
-                'save_model': save_model,
-                'scale': bool(scale),
-                'scale_factor': scale_factor,
-                'data_limit': data_limit,
-                'validation_split': validation_split,
-                'input_channels': input_channels,
-                'output_channels': output_channels,
-                'device': str(device)
-            }
-            
-            # Log final hparams with real metrics (replaces placeholder)
-            writer.add_hparams(hparams, final_metrics)
-            
-        except Exception as e:
-            # Fallback: write final metrics as text
-            try:
-                import json
-                writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
-                print(f"⚠ WARNING: add_hparams failed, using text fallback: {e}")
-            except Exception:
-                pass
-
-        try:
-            writer.flush()  # Ensure all data is written before closing
             writer.close()
-        except Exception:
-            pass
-        print(f"✓ TensorBoard logs saved to: {log_dir}")
-        print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
+            print(f"\n✓ TensorBoard logs saved to: {log_dir}")
+            print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
+        except Exception as e:
+            print(f"⚠ WARNING: Failed to close TensorBoard writer: {e}")
     
     # Save training history
     import numpy as np
     np.save('training_history.npy', history)
     print("Training history saved to 'training_history.npy'")
+    
+    return history
