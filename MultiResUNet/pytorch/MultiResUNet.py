@@ -641,123 +641,70 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             print(f"\n✓ TensorBoard logging enabled at: {log_dir}")
             
             # Record comprehensive hyperparameters and configuration
-            try:
-                import json
+            import json
+            
+            # Construct complete hyperparameter dictionary
+            hparams = {
+                # Training hyperparameters
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+                'gradient_clip': gradient_clip,
+                'weight_decay': weight_decay,
                 
-                # Construct complete hyperparameter dictionary
-                hparams = {
-                    # Training hyperparameters
-                    'epochs': epochs,
-                    'batch_size': batch_size,
-                    'learning_rate': learning_rate,
-                    'gradient_clip': gradient_clip,
-                    'weight_decay': weight_decay,
-                    
-                    # Scheduler parameters
-                    'lr_scheduler_type': lr_scheduler_type,
-                    'lr_step_size': lr_step_size,
-                    'lr_gamma': lr_gamma,
-                    'lr_patience': lr_patience,
-                    
-                    # DataLoader parameters
-                    'num_workers': num_workers,
-                    'prefetch_factor': prefetch_factor,
-                    
-                    # Model architecture
-                    'input_channels': input_channels,
-                    'output_channels': output_channels,
-                    
-                    # Data configuration
-                    'data_limit': data_limit if data_limit else -1,  # -1 means all data
-                    'validation_split': validation_split,
-                    'scale': bool(scale),
-                    'scale_factor': scale_factor,
-                    
-                    # Loss function configuration
-                    'use_focal_loss': use_focal_loss,
-                    'focal_alpha': focal_alpha,
-                    'focal_gamma': focal_gamma,
-                    'use_combined_loss': use_combined_loss,
-                    'bce_weight': bce_weight,
-                    'dice_weight': dice_weight,
-                    
-                    # Device info
-                    'device': str(device),
-                }
+                # Scheduler parameters
+                'lr_scheduler_type': lr_scheduler_type,
+                'lr_step_size': lr_step_size,
+                'lr_gamma': lr_gamma,
+                'lr_patience': lr_patience,
                 
-                # Add readable config text to TensorBoard
-                config_text = json.dumps(hparams, indent=2)
-                writer.add_text('Training_Config', config_text)
+                # DataLoader parameters
+                'num_workers': num_workers,
+                'prefetch_factor': prefetch_factor,
                 
-                # Register hyperparameters for comparison
-                try:
-                    import json
-                    
-                    # Construct complete hyperparameter dictionary
-                    hparams = {
-                        # Training hyperparameters
-                        'epochs': epochs,
-                        'batch_size': batch_size,
-                        'learning_rate': learning_rate,
-                        'gradient_clip': gradient_clip,
-                        'weight_decay': weight_decay,
-                        
-                        # Scheduler parameters
-                        'lr_scheduler_type': lr_scheduler_type,
-                        'lr_step_size': lr_step_size,
-                        'lr_gamma': lr_gamma,
-                        'lr_patience': lr_patience,
-                        
-                        # DataLoader parameters
-                        'num_workers': num_workers,
-                        'prefetch_factor': prefetch_factor,
-                        
-                        # Model architecture
-                        'input_channels': input_channels,
-                        'output_channels': output_channels,
-                        
-                        # Data configuration
-                        'data_limit': data_limit if data_limit else -1,  # -1 means all data
-                        'validation_split': validation_split,
-                        'scale': bool(scale),
-                        'scale_factor': scale_factor,
-                        
-                        # Loss function configuration
-                        'use_focal_loss': use_focal_loss,
-                        'focal_alpha': focal_alpha,
-                        'focal_gamma': focal_gamma,
-                        'use_combined_loss': use_combined_loss,
-                        'bce_weight': bce_weight,
-                        'dice_weight': dice_weight,
-                        
-                        # Device info
-                        'device': str(device),
-                    }
-                    
-                    # Add readable config text to TensorBoard
-                    config_text = json.dumps(hparams, indent=2)
-                    writer.add_text('Training_Config', config_text)
-                    
-                    # Register hyperparameters for comparison
-                    filtered_hparams = {
-                        k: v for k, v in hparams.items() 
-                        if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
-                    }
-                    
-                    # Add placeholder metric for hparams registration
-                    writer.add_hparams(
-                        filtered_hparams,
-                        {'hparam/placeholder': 0.0}
-                    )
-                    
-                    # Flush immediately to ensure data is written
-                    writer.flush()
-                    
-                    print(f"  ✓ Hyperparameters recorded")
-                    
-                except Exception as e:
-                    print(f"  ⚠ Warning: Failed to record hyperparameters: {e}")
+                # Model architecture
+                'input_channels': input_channels,
+                'output_channels': output_channels,
                 
+                # Data configuration
+                'data_limit': data_limit if data_limit else -1,  # -1 means all data
+                'validation_split': validation_split,
+                'scale': bool(scale),
+                'scale_factor': scale_factor,
+                
+                # Loss function configuration
+                'use_focal_loss': use_focal_loss,
+                'focal_alpha': focal_alpha,
+                'focal_gamma': focal_gamma,
+                'use_combined_loss': use_combined_loss,
+                'bce_weight': bce_weight,
+                'dice_weight': dice_weight,
+                
+                # Device info
+                'device': str(device),
+            }
+            
+            # Add readable config text to TensorBoard
+            config_text = json.dumps(hparams, indent=2)
+            writer.add_text('Training_Config', config_text)
+            
+            # Register hyperparameters for comparison
+            filtered_hparams = {
+                k: v for k, v in hparams.items() 
+                if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
+            }
+            
+            # Add placeholder metric for hparams registration
+            writer.add_hparams(
+                filtered_hparams,
+                {'hparam/placeholder': 0.0}
+            )
+            
+            # Flush immediately to ensure data is written
+            writer.flush()
+            
+            print(f"  ✓ Hyperparameters recorded")
+            
         except ImportError:
             print("\n⚠ WARNING: TensorBoard not installed. Install with: pip install tensorboard")
             writer = None
