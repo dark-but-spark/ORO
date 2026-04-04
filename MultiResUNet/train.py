@@ -247,6 +247,21 @@ def parse_args():
     parser.add_argument('--dice-weight', type=float, default=0.5,
                         help='Weight for Dice loss in combined loss (default: 0.5)')
     
+    # Regularization parameters
+    parser.add_argument('--dropout-rate', type=float, default=0.2,
+                        help='Dropout rate for regularization to prevent overfitting (default: 0.2)')
+    
+    # Learning rate scheduler options
+    parser.add_argument('--lr-scheduler', type=str, default='cosine',
+                        choices=['cosine', 'step', 'plateau', 'exponential'],
+                        help='Learning rate scheduler type (default: cosine)')
+    parser.add_argument('--lr-step-size', type=int, default=30,
+                        help='Step size for StepLR scheduler (default: 30)')
+    parser.add_argument('--lr-gamma', type=float, default=0.1,
+                        help='Multiplicative factor for StepLR/ExponentialLR schedulers (default: 0.1)')
+    parser.add_argument('--lr-patience', type=int, default=10,
+                        help='Patience for ReduceLROnPlateau scheduler (default: 10)')
+    
     # Device selection
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
@@ -457,6 +472,11 @@ def main():
             use_combined_loss=args.use_combined_loss,
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
+            # Learning rate scheduler parameters
+            lr_scheduler_type=args.lr_scheduler,
+            lr_step_size=args.lr_step_size,
+            lr_gamma=args.lr_gamma,
+            lr_patience=args.lr_patience
         )
     
     else:
@@ -490,7 +510,8 @@ def main():
         print(f"\nInitializing model...")
         model = MultiResUnet(
             input_channels=args.input_channels, 
-            num_classes=args.output_channels
+            num_classes=args.output_channels,
+            dropout_rate=args.dropout_rate
         ).to(device)
         
         print(f"Model architecture: MultiResUNet")
@@ -538,6 +559,11 @@ def main():
             use_combined_loss=args.use_combined_loss,
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
+            # Learning rate scheduler parameters
+            lr_scheduler_type=args.lr_scheduler,
+            lr_step_size=args.lr_step_size,
+            lr_gamma=args.lr_gamma,
+            lr_patience=args.lr_patience
         )
     
     print("-" * 60)

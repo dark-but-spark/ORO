@@ -246,14 +246,16 @@ class MultiResUnet(torch.nn.Module):
 		input_channels {int} -- number of channels in image
 		num_classes {int} -- number of segmentation classes
 		alpha {float} -- alpha hyperparameter (default: 1.67)
+		dropout_rate {float} -- dropout rate for regularization (default: 0.2)
 	
 	Returns:
 		[keras model] -- MultiResUNet model
 	'''
-	def __init__(self, input_channels, num_classes, alpha=1.67):
+	def __init__(self, input_channels, num_classes, alpha=1.67, dropout_rate=0.2):
 		super().__init__()
 		
 		self.alpha = alpha
+		self.dropout_rate = dropout_rate
 		
 		# Encoder Path
 		self.multiresblock1 = Multiresblock(input_channels,32)
@@ -282,6 +284,9 @@ class MultiResUnet(torch.nn.Module):
 		self.multiresblock5 = Multiresblock(self.in_filters4,32*16)
 		self.in_filters5 = int(32*16*self.alpha*0.167)+int(32*16*self.alpha*0.333)+int(32*16*self.alpha* 0.5)
 	 
+		# Add dropout after bottleneck
+		self.dropout_bottleneck = torch.nn.Dropout2d(dropout_rate)
+		
 		# Decoder path
 		self.upsample6 = torch.nn.ConvTranspose2d(self.in_filters5,32*8,kernel_size=(2,2),stride=(2,2))  
 		self.concat_filters1 =  32*8 *2
@@ -297,12 +302,15 @@ class MultiResUnet(torch.nn.Module):
 		self.concat_filters3 =  32*2 *2
 		self.multiresblock8 = Multiresblock(self.concat_filters3,32*2)
 		self.in_filters8 = int(32*2*self.alpha*0.167)+int(32*2*self.alpha*0.333)+int(32*2*self.alpha* 0.5)
-	
+
 		self.upsample9 = torch.nn.ConvTranspose2d(self.in_filters8,32,kernel_size=(2,2),stride=(2,2))
 		self.concat_filters4 =  32 *2
 		self.multiresblock9 = Multiresblock(self.concat_filters4,32)
 		self.in_filters9 = int(32*self.alpha*0.167)+int(32*self.alpha*0.333)+int(32*self.alpha* 0.5)
 
+		# Add dropout before final layer
+		self.dropout_before_final = torch.nn.Dropout2d(dropout_rate)
+		
 		# Update the final layer to produce the correct number of output channels
 		self.conv_final = Conv2d_batchnorm(self.in_filters9, num_classes, kernel_size=(1, 1), activation='None')
 
@@ -325,6 +333,9 @@ class MultiResUnet(torch.nn.Module):
 		x_multires4 = self.respath4(x_multires4)
 
 		x_multires5 = self.multiresblock5(x_pool4)
+		
+		# Apply dropout at bottleneck
+		x_multires5 = self.dropout_bottleneck(x_multires5)
 
 		up6 = torch.cat([self.upsample6(x_multires5),x_multires4],axis=1)
 		x_multires6 = self.multiresblock6(up6)
@@ -337,6 +348,9 @@ class MultiResUnet(torch.nn.Module):
 
 		up9 = torch.cat([self.upsample9(x_multires8),x_multires1],axis=1)
 		x_multires9 = self.multiresblock9(up9)
+		
+		# Apply dropout before final layer
+		x_multires9 = self.dropout_before_final(x_multires9)
 
 		out =  self.conv_final(x_multires9)  # Ensure the output has the correct number of channels
 		return out
@@ -365,7 +379,7 @@ def jacard(y_true, y_pred):
     jaccard = (intersection + smooth) / (union + smooth)
     return jaccard.mean()
 
-def saveModel(model, model_dir='models'):
+def saveModel(model, model_dir='models', model_name='model.pth'):
     """
     Save the model architecture and weights.
 
@@ -384,7 +398,7 @@ def saveModel(model, model_dir='models'):
     torch.save(model, model_arch_path)
 
     # Save the model weights
-    model_weights_path = os.path.join(model_dir, 'model_weights.pth')
+    model_weights_path = os.path.join(model_dir, model_name)
     torch.save(model.state_dict(), model_weights_path)
 
     print(f"Model architecture saved to {model_arch_path}")
@@ -463,7 +477,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               input_channels=3, output_channels=4,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
-              use_combined_loss=False, bce_weight=0.5, dice_weight=0.5):
+              use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
+              # learning rate scheduler configuration
+              lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -583,9 +599,39 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
-    # Learning rate scheduler - Use Cosine Annealing for better stability on sparse data
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+    # Learning rate scheduler - Support different types for flexibility
+    if hasattr(train_loader, '__len__'):
+        steps_per_epoch = len(train_loader)
+    else:
+        # Estimate steps per epoch if train_loader doesn't support len()
+        steps_per_epoch = max(1, len(X_train) // batch_size if X_train is not None else 100)
     
+    total_steps = epochs * steps_per_epoch
+    
+    if isinstance(learning_rate, (int, float)):
+        base_lr = learning_rate
+    else:
+        base_lr = 1e-4  # default fallback
+    
+    # Learning rate scheduler - Support multiple types for different scenarios
+    if lr_scheduler_type == 'cosine':
+        # Cosine annealing - good for stable convergence on sparse data
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+    elif lr_scheduler_type == 'step':
+        # Step decay - simple and effective, reduces LR by factor every N epochs
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=lr_step_size, gamma=lr_gamma)
+    elif lr_scheduler_type == 'exponential':
+        # Exponential decay - smooth continuous decay
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_gamma)
+    elif lr_scheduler_type == 'plateau':
+        # Reduce on plateau - adaptive, reduces LR when metric stops improving
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='max', factor=lr_gamma, patience=lr_patience, verbose=True
+        )
+    else:
+        # Default to cosine annealing
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+
     # Setup TensorBoard writer if log_dir is provided
     writer = None
     if log_dir is not None:
@@ -606,6 +652,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                     'learning_rate': learning_rate,
                     'gradient_clip': gradient_clip,
                     'weight_decay': weight_decay,
+                    
+                    # Scheduler parameters
+                    'lr_scheduler_type': lr_scheduler_type,
+                    'lr_step_size': lr_step_size,
+                    'lr_gamma': lr_gamma,
+                    'lr_patience': lr_patience,
                     
                     # DataLoader parameters
                     'num_workers': num_workers,
@@ -638,24 +690,73 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 writer.add_text('Training_Config', config_text)
                 
                 # Register hyperparameters for comparison
-                filtered_hparams = {
-                    k: v for k, v in hparams.items() 
-                    if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
-                }
-                
-                # Add placeholder metric for hparams registration
-                writer.add_hparams(
-                    filtered_hparams,
-                    {'hparam/placeholder': 0.0}
-                )
-                
-                # Flush immediately to ensure data is written
-                writer.flush()
-                
-                print(f"  ✓ Hyperparameters recorded")
-                
-            except Exception as e:
-                print(f"  ⚠ Warning: Failed to record hyperparameters: {e}")
+                try:
+                    import json
+                    
+                    # Construct complete hyperparameter dictionary
+                    hparams = {
+                        # Training hyperparameters
+                        'epochs': epochs,
+                        'batch_size': batch_size,
+                        'learning_rate': learning_rate,
+                        'gradient_clip': gradient_clip,
+                        'weight_decay': weight_decay,
+                        
+                        # Scheduler parameters
+                        'lr_scheduler_type': lr_scheduler_type,
+                        'lr_step_size': lr_step_size,
+                        'lr_gamma': lr_gamma,
+                        'lr_patience': lr_patience,
+                        
+                        # DataLoader parameters
+                        'num_workers': num_workers,
+                        'prefetch_factor': prefetch_factor,
+                        
+                        # Model architecture
+                        'input_channels': input_channels,
+                        'output_channels': output_channels,
+                        
+                        # Data configuration
+                        'data_limit': data_limit if data_limit else -1,  # -1 means all data
+                        'validation_split': validation_split,
+                        'scale': bool(scale),
+                        'scale_factor': scale_factor,
+                        
+                        # Loss function configuration
+                        'use_focal_loss': use_focal_loss,
+                        'focal_alpha': focal_alpha,
+                        'focal_gamma': focal_gamma,
+                        'use_combined_loss': use_combined_loss,
+                        'bce_weight': bce_weight,
+                        'dice_weight': dice_weight,
+                        
+                        # Device info
+                        'device': str(device),
+                    }
+                    
+                    # Add readable config text to TensorBoard
+                    config_text = json.dumps(hparams, indent=2)
+                    writer.add_text('Training_Config', config_text)
+                    
+                    # Register hyperparameters for comparison
+                    filtered_hparams = {
+                        k: v for k, v in hparams.items() 
+                        if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
+                    }
+                    
+                    # Add placeholder metric for hparams registration
+                    writer.add_hparams(
+                        filtered_hparams,
+                        {'hparam/placeholder': 0.0}
+                    )
+                    
+                    # Flush immediately to ensure data is written
+                    writer.flush()
+                    
+                    print(f"  ✓ Hyperparameters recorded")
+                    
+                except Exception as e:
+                    print(f"  ⚠ Warning: Failed to record hyperparameters: {e}")
                 
         except ImportError:
             print("\n⚠ WARNING: TensorBoard not installed. Install with: pip install tensorboard")
@@ -663,14 +764,17 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         except Exception as e:
             print(f"\n⚠ WARNING: Failed to initialize TensorBoard: {e}")
             writer = None
-    
+
     # Initialize current_lr before training loop
     current_lr = learning_rate
-    
+
     # Training loop
     history = {'loss': [], 'dice': [], 'jaccard': [], 'val_dice': [], 'val_jaccard': []}
     best_val_dice = 0.0
     avg_val_losses = []
+    epochs_without_improvement = 0
+    early_stopping_patience = 15  # Number of epochs to wait before stopping if no improvement
+    
     for epoch in range(epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
@@ -721,6 +825,21 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['val_dice'].append(val_dice)
         history['val_jaccard'].append(val_jaccard)
 
+        # Track best validation dice and save model if improved
+        if val_dice > best_val_dice:
+            best_val_dice = val_dice
+            epochs_without_improvement = 0  # Reset counter when improvement occurs
+            if save_model:
+                saveModel(model, model_dir=save_dir, model_name='best_model.pth')
+        else:
+            epochs_without_improvement += 1
+
+        # Early stopping check
+        if epochs_without_improvement >= early_stopping_patience:
+            print(f"\n⚠️  Early stopping triggered after {early_stopping_patience} epochs without improvement.")
+            print(f"Best validation Dice: {best_val_dice:.4f} at epoch {epoch+1-epochs_without_improvement}")
+            break  # Exit the training loop
+
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         
@@ -730,12 +849,30 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         print(f"Average Jaccard Index: {epoch_jaccard:.4f}")
         print(f"  Current learning rate: {current_lr:.6f}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
+        print(f"  Best Validation Dice: {best_val_dice:.4f}")
+        print(f"  Patience Counter: {epochs_without_improvement}/{early_stopping_patience}")
         
         # Log to TensorBoard
         if writer is not None:
             try:
                 writer.add_scalar('Loss/train', epoch_loss, epoch+1)
-                writer.add_scalar('Loss/validation', val_dice, epoch+1)  # Using dice as proxy for validation loss
+                # Use actual validation loss calculation for more accurate tracking
+                with torch.no_grad():
+                    model.eval()
+                    val_running_loss = 0.0
+                    val_batches = 0
+                    for X_val_batch, Y_val_batch in val_loader:
+                        if device is not None:
+                            X_val_batch, Y_val_batch = X_val_batch.to(device), Y_val_batch.to(device)
+                        Y_val_pred = model(X_val_batch)
+                        val_loss = criterion(Y_val_pred, Y_val_batch)
+                        val_running_loss += val_loss.item()
+                        val_batches += 1
+                    avg_val_loss = val_running_loss / val_batches
+                    avg_val_losses.append(avg_val_loss)
+                    writer.add_scalar('Loss/validation', avg_val_loss, epoch+1)
+                model.train()  # Switch back to training mode
+                
                 writer.add_scalar('Metrics/dice', epoch_dice, epoch+1)
                 writer.add_scalar('Metrics/jaccard', epoch_jaccard, epoch+1)
                 writer.add_scalar('Metrics/val_dice', val_dice, epoch+1)
@@ -747,11 +884,22 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                     print(f"⚠ WARNING: Failed to write to TensorBoard: {e}")
 
         # Save model checkpoint
-        if save_model:
-            saveModel(model, model_dir=save_dir)
+        if save_model and (epoch + 1) % 10 == 0:  # Save every 10 epochs
+            saveModel(model, model_dir=save_dir, model_name=f'model_epoch_{epoch+1}.pth')
 
-        # Update learning rate
-        scheduler.step()
+        # Update learning rate based on scheduler type
+        if lr_scheduler_type == 'plateau':
+            # For ReduceLROnPlateau, we need to pass the monitored metric
+            scheduler.step(val_dice)  # Pass validation dice as the metric to monitor
+        else:
+            # For other schedulers, just call step()
+            scheduler.step()
+
+        # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX - Enhanced)
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()  # FORCE Python garbage collection
 
         # Monitor memory every 5 epochs (more frequent monitoring)
         if (epoch + 1) % 5 == 0 and device.type == 'cuda':
@@ -787,6 +935,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'learning_rate': learning_rate,
                 'gradient_clip': gradient_clip,
                 'weight_decay': weight_decay,
+                'lr_scheduler_type': lr_scheduler_type,
+                'lr_step_size': lr_step_size,
+                'lr_gamma': lr_gamma,
+                'lr_patience': lr_patience,
                 'num_workers': num_workers,
                 'prefetch_factor': prefetch_factor,
                 'save_model': save_model,
@@ -799,26 +951,17 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'device': str(device)
             }
             
-            # Log final hparams with real metrics (replaces placeholder)
+            # Log final metrics to replace placeholder
             writer.add_hparams(hparams, final_metrics)
+            writer.flush()
+            
+            print(f"  ✓ Final metrics recorded to TensorBoard")
             
         except Exception as e:
-            # Fallback: write final metrics as text
-            try:
-                import json
-                writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
-                print(f"⚠ WARNING: add_hparams failed, using text fallback: {e}")
-            except Exception:
-                pass
+            print(f"  ⚠ Warning: Failed to record final metrics: {e}")
+        
+        writer.close()  # Close the writer to free resources
 
-        try:
-            writer.flush()  # Ensure all data is written before closing
-            writer.close()
-        except Exception:
-            pass
-        print(f"✓ TensorBoard logs saved to: {log_dir}")
-        print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
-    
     # Save training history to the same directory as TensorBoard logs if available
     import numpy as np
     import os
@@ -827,5 +970,5 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     history_path = os.path.join(history_save_dir, 'training_history.npy')
     np.save(history_path, history)
     print(f"Training history saved to '{history_path}'")
-    
+
     return history
