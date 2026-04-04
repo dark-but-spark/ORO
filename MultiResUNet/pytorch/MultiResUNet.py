@@ -668,7 +668,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     current_lr = learning_rate
     
     # Training loop
-    history = {'loss': [], 'dice': [], 'jaccard': []}
+    history = {'loss': [], 'dice': [], 'jaccard': [], 'val_dice': [], 'val_jaccard': []}
+    best_val_dice = 0.0
+    avg_val_losses = []
     for epoch in range(epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
@@ -716,6 +718,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['loss'].append(epoch_loss)
         history['dice'].append(epoch_dice)
         history['jaccard'].append(epoch_jaccard)
+        history['val_dice'].append(val_dice)
+        history['val_jaccard'].append(val_jaccard)
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -749,22 +753,79 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         # Update learning rate
         scheduler.step()
 
+        # Monitor memory every 5 epochs (more frequent monitoring)
+        if (epoch + 1) % 5 == 0 and device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated(device) / 1024**2
+            reserved = torch.cuda.memory_reserved(device) / 1024**2
+            print(f"  📊 GPU Memory Status: Allocated={allocated:.0f}MB, Reserved={reserved:.0f}MB")
+            
+            # Warning if memory usage is high
+            if allocated > 6000:  # 6GB threshold
+                print(f"  ⚠ WARNING: High GPU memory usage detected. Consider reducing batch_size.")
+
     print("\nTraining complete.")
-    print(f"Final Dice: {history['dice'][-1]:.4f}")
-    print(f"Final Jaccard: {history['jaccard'][-1]:.4f}")
+    print(f"Final Dice: {history['val_dice'][-1]:.4f}")
+    print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
+    print(f"Best Validation Dice: {best_val_dice:.4f}")
     
-    # Close TensorBoard writer
+    # Close TensorBoard writer and log final hparams/metrics
     if writer is not None:
         try:
-            writer.close()
-            print(f"\n✓ TensorBoard logs saved to: {log_dir}")
-            print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
+            # Update hparams with FINAL metrics (CRITICAL FIX)
+            # This should be done ONCE at the end, replacing the placeholder
+            final_metrics = {
+                'final/val_dice': float(best_val_dice),
+                'final/val_jaccard': float(history['val_jaccard'][-1]),
+                'final/train_loss': float(history['loss'][-1]) if history['loss'] else 0.0,
+                'final/val_loss': float(avg_val_losses[-1]) if avg_val_losses else 0.0
+            }
+            
+            # Use COMPLETE hparams (all training parameters)
+            hparams = {
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+                'gradient_clip': gradient_clip,
+                'weight_decay': weight_decay,
+                'num_workers': num_workers,
+                'prefetch_factor': prefetch_factor,
+                'save_model': save_model,
+                'scale': bool(scale),
+                'scale_factor': scale_factor,
+                'data_limit': data_limit,
+                'validation_split': validation_split,
+                'input_channels': input_channels,
+                'output_channels': output_channels,
+                'device': str(device)
+            }
+            
+            # Log final hparams with real metrics (replaces placeholder)
+            writer.add_hparams(hparams, final_metrics)
+            
         except Exception as e:
-            print(f"⚠ WARNING: Failed to close TensorBoard writer: {e}")
+            # Fallback: write final metrics as text
+            try:
+                import json
+                writer.add_text('final_metrics', json.dumps(final_metrics, indent=2))
+                print(f"⚠ WARNING: add_hparams failed, using text fallback: {e}")
+            except Exception:
+                pass
+
+        try:
+            writer.flush()  # Ensure all data is written before closing
+            writer.close()
+        except Exception:
+            pass
+        print(f"✓ TensorBoard logs saved to: {log_dir}")
+        print(f"  Run 'tensorboard --logdir {log_dir}' to view training curves")
     
-    # Save training history
+    # Save training history to the same directory as TensorBoard logs if available
     import numpy as np
-    np.save('training_history.npy', history)
-    print("Training history saved to 'training_history.npy'")
+    import os
+    history_save_dir = log_dir if log_dir is not None else 'runs/history'
+    os.makedirs(history_save_dir, exist_ok=True)
+    history_path = os.path.join(history_save_dir, 'training_history.npy')
+    np.save(history_path, history)
+    print(f"Training history saved to '{history_path}'")
     
     return history

@@ -331,8 +331,17 @@ def main():
 
     # Setup TensorBoard logging if enabled
     if args.tensorboard:
-        # Use the provided log_dir directly (avoid double timestamp nesting)
-        log_dir = args.log_dir
+        # If log_dir is still the default 'runs/logs', create a unique subdirectory with timestamp
+        if args.log_dir == 'runs/logs':
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Create a descriptive log directory name similar to run_training.sh
+            log_dir = f"runs/tensorboard/train_{timestamp}_e{args.epochs}_bs{args.batch_size}_lr{args.learning_rate}"
+            if args.scale:
+                log_dir += f"_scale{args.scale_factor}"
+        else:
+            log_dir = args.log_dir
+        
         os.makedirs(log_dir, exist_ok=True)
         print(f"\nTensorBoard logs will be saved to: {log_dir}")
     else:
