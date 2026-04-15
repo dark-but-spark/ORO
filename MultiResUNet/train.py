@@ -119,6 +119,7 @@ def diagnose_data_flow(args):
         print(f"   - X shape: {X_test.shape}, dtype: {X_test.dtype}, range: [{X_test.min():.3f}, {X_test.max():.3f}]")
         print(f"   - Y shape: {Y_test.shape}, dtype: {Y_test.dtype}, range: [{Y_test.min():.3f}, {Y_test.max():.3f}]")
         
+        
         # Check for all zeros
         if X_test.sum() == 0:
             print(f"   ⚠ WARNING: All input images are zero! Check data preprocessing")
@@ -215,6 +216,11 @@ def parse_args():
     parser.add_argument('--prefetch-factor', type=int, default=2,
                         help='Number of batches loaded in advance by each worker (default: 2)')
     
+    # Repeat feeding for data augmentation
+    parser.add_argument('--repeat-factor', type=int, default=1,
+                        help='Number of times to repeat feed the same image with different augmentation (default: 1). '
+                             'Setting this >1 enables dynamic augmentation where each repetition applies random transforms.')
+    
     # Logging and saving
     parser.add_argument('--verbose', action='store_true',
                         help='Enable verbose logging during training')
@@ -299,6 +305,7 @@ def main():
         print(f"Log Directory: {args.log_dir}")
     print(f"Num Workers: {args.num_workers}")
     print(f"Prefetch Factor: {args.prefetch_factor}")
+    print(f"Repeat Factor: {args.repeat_factor}")
     print("=" * 60)
     
     # Memory safety check and recommendation
@@ -320,6 +327,12 @@ def main():
         print(f"   Consider enabling scale to reduce memory usage:")
         print(f"   Recommended: --scale --scale-factor 0.5 (reduces to 320x320)")
         print(f"   This will save ~75% memory while maintaining good quality\n")
+    
+    # If repeat factor > 1, warn about increased computational cost
+    if args.repeat_factor > 1:
+        print(f"\n🔄 DATA AUGMENTATION: Enabled repeat feeding (factor: {args.repeat_factor})")
+        print(f"   Each image will be fed {args.repeat_factor} times with different augmentations per epoch")
+        print(f"   Note: This will increase training time by approximately {args.repeat_factor}x\n")
     
     # Check for GPU availability
     if args.device == 'cuda' and not torch.cuda.is_available():
@@ -387,7 +400,10 @@ def main():
             limit=args.data_limit,
             train_ratio=1.0 - args.validation_split,
             scale=args.scale,
-            scale_factor=args.scale_factor
+            scale_factor=args.scale_factor,
+            original_height=None,  # Will be determined automatically from first image
+            original_width=None,   # Will be determined automatically from first image
+            repeat_factor=args.repeat_factor
         )
         
         # Create DataLoaders with OPTIMIZED parameters for memory efficiency
