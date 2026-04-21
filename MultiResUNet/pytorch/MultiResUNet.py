@@ -475,6 +475,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               # additional run config for logging
               scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
               input_channels=3, output_channels=4,
+              train_augmentation=False, val_augmentation=False, repeat_factor=1, seed=42,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
@@ -671,6 +672,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'validation_split': validation_split,
                 'scale': bool(scale),
                 'scale_factor': scale_factor,
+                'train_augmentation': train_augmentation,
+                'val_augmentation': val_augmentation,
+                'repeat_factor': repeat_factor,
+                'seed': seed,
                 
                 # Loss function configuration
                 'use_focal_loss': use_focal_loss,
@@ -895,6 +900,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'validation_split': validation_split,
                 'input_channels': input_channels,
                 'output_channels': output_channels,
+                'train_augmentation': train_augmentation,
+                'val_augmentation': val_augmentation,
+                'repeat_factor': repeat_factor,
+                'seed': seed,
                 'device': str(device)
             }
             

@@ -1,4 +1,5 @@
 import os
+import random
 import cv2
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -16,9 +17,9 @@ class SegmentationDataset(Dataset):
     avoiding the need to load all data into memory at once.
     """
     
-    def __init__(self, img_dir, mask_dir, img_files=None, mask_files=None, 
-                 limit=None, transform=None, scale=False, scale_factor=0.5, 
-                 original_height=None, original_width=None, repeat_factor=1, 
+    def __init__(self, img_dir, mask_dir, img_files=None, mask_files=None,
+                 limit=None, transform=None, scale=False, scale_factor=0.5,
+                 original_height=None, original_width=None, repeat_factor=1,
                  apply_augmentation=True):
         """
         Args:
@@ -84,8 +85,6 @@ class SegmentationDataset(Dataset):
     
     def apply_random_augmentations(self, img, mask):
         """Apply random augmentations to both image and mask consistently"""
-        import random
-        
         # Random horizontal flip
         if random.random() > 0.5:
             img = np.fliplr(img).copy()
@@ -262,13 +261,7 @@ class SegmentationDataset(Dataset):
         img = img.transpose(2, 0, 1)  # HWC -> CHW
         mask = mask.transpose(2, 0, 1) if len(mask.shape) == 3 else mask[np.newaxis, :, :]
         
-        # Return with metadata about dimensions for augmentation
-        return {
-            'image': torch.from_numpy(img),
-            'mask': torch.from_numpy(mask),
-            'original_size': (orig_h, orig_w),
-            'current_size': (img.shape[1], img.shape[2])  # Height, Width from CHW format
-        }
+        return torch.from_numpy(img), torch.from_numpy(mask)
 
 
 def load_data(limit=None, scale=False, scale_factor=0.5):
@@ -347,10 +340,11 @@ def load_data(limit=None, scale=False, scale_factor=0.5):
     return X, Y
 
 
-def create_datasets(img_dir='data/imgs', mask_dir='data/masks', 
+def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    train_ratio=0.9, limit=None, val_ratio=0.1,
-                   scale=False, scale_factor=0.5, original_height=None, original_width=None, 
-                   repeat_factor=1, train_apply_augmentation=True, val_apply_augmentation=False):
+                   scale=False, scale_factor=0.5, original_height=None, original_width=None,
+                   repeat_factor=1, train_apply_augmentation=True, val_apply_augmentation=False,
+                   shuffle=True, seed=42):
     """Create training and validation datasets without loading all data into memory.
     
     This function creates dataset objects that will load data on-demand,
@@ -369,6 +363,8 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         repeat_factor (int, optional): Number of times to repeat each image with different augmentation
         train_apply_augmentation (bool): Whether to apply augmentations to training data
         val_apply_augmentation (bool): Whether to apply augmentations to validation data
+        shuffle (bool): Whether to shuffle file pairs before splitting train/validation
+        seed (int): Random seed used for train/validation split shuffling
     
     Returns:
         tuple: (train_dataset, val_dataset, n_train, n_val)
@@ -387,6 +383,18 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         img_files = img_files[:limit]
         mask_files = mask_files[:limit]
     
+    paired_files = list(zip(img_files, mask_files))
+    if shuffle:
+        rng = random.Random(seed)
+        rng.shuffle(paired_files)
+
+    if paired_files:
+        img_files, mask_files = zip(*paired_files)
+        img_files = list(img_files)
+        mask_files = list(mask_files)
+    else:
+        img_files, mask_files = [], []
+
     n_total = len(img_files)
     n_train = int(n_total * train_ratio)
     n_val = n_total - n_train

@@ -11,6 +11,7 @@ import torch
 import argparse
 import gc
 from datetime import datetime
+import random
 
 # Import the MultiResUNet model and utility functions
 from pytorch.MultiResUNet import MultiResUnet, dice_coef, jacard, saveModel, evaluateModel, trainStep
@@ -220,6 +221,13 @@ def parse_args():
     parser.add_argument('--repeat-factor', type=int, default=1,
                         help='Number of times to repeat feed the same image with different augmentation (default: 1). '
                              'Setting this >1 enables dynamic augmentation where each repetition applies random transforms.')
+    parser.add_argument('--train-augmentation', dest='train_augmentation', action='store_true',
+                        help='Enable augmentation for training data in streaming dataset mode (default: enabled)')
+    parser.add_argument('--no-train-augmentation', dest='train_augmentation', action='store_false',
+                        help='Disable augmentation for training data in streaming dataset mode')
+    parser.add_argument('--val-augmentation', action='store_true',
+                        help='Enable augmentation for validation data (default: disabled, usually keep off)')
+    parser.set_defaults(train_augmentation=True)
     
     # Logging and saving
     parser.add_argument('--verbose', action='store_true',
@@ -272,6 +280,8 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
                         help='Device to use for training (default: cuda)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducible split/shuffle/training (default: 42)')
     
     args = parser.parse_args()
     return args
@@ -306,7 +316,16 @@ def main():
     print(f"Num Workers: {args.num_workers}")
     print(f"Prefetch Factor: {args.prefetch_factor}")
     print(f"Repeat Factor: {args.repeat_factor}")
+    print(f"Train Augmentation: {args.train_augmentation}")
+    print(f"Validation Augmentation: {args.val_augmentation}")
+    print(f"Random Seed: {args.seed}")
     print("=" * 60)
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     
     # Memory safety check and recommendation
     if args.data_limit is not None:
@@ -403,7 +422,11 @@ def main():
             scale_factor=args.scale_factor,
             original_height=None,  # Will be determined automatically from first image
             original_width=None,   # Will be determined automatically from first image
-            repeat_factor=args.repeat_factor
+            repeat_factor=args.repeat_factor,
+            train_apply_augmentation=args.train_augmentation,
+            val_apply_augmentation=args.val_augmentation,
+            shuffle=True,
+            seed=args.seed
         )
         
         # Create DataLoaders with OPTIMIZED parameters for memory efficiency
@@ -413,6 +436,15 @@ def main():
         cpu_count = os.cpu_count() or 4
         optimal_workers = min(args.num_workers, max(1, cpu_count - 2))
         
+        loader_generator = torch.Generator()
+        loader_generator.manual_seed(args.seed)
+
+        def seed_worker(worker_id):
+            worker_seed = args.seed + worker_id
+            random.seed(worker_seed)
+            np.random.seed(worker_seed)
+            torch.manual_seed(worker_seed)
+
         train_loader = DataLoader(
             train_dataset, 
             batch_size=args.batch_size, 
@@ -421,7 +453,9 @@ def main():
             pin_memory=True,
             prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
             persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
-            drop_last=False  # Keep last batch to avoid data waste
+            drop_last=False,  # Keep last batch to avoid data waste
+            worker_init_fn=seed_worker if optimal_workers > 0 else None,
+            generator=loader_generator
         )
         
         val_loader = DataLoader(
@@ -432,7 +466,9 @@ def main():
             pin_memory=True,
             prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
             persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
-            drop_last=False
+            drop_last=False,
+            worker_init_fn=seed_worker if optimal_workers > 0 else None,
+            generator=loader_generator
         )
         
         print(f"✓ Training samples: {n_train}")
@@ -481,6 +517,10 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            train_augmentation=args.train_augmentation,
+            val_augmentation=args.val_augmentation,
+            repeat_factor=args.repeat_factor,
+            seed=args.seed,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -568,6 +608,10 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            train_augmentation=False,
+            val_augmentation=False,
+            repeat_factor=1,
+            seed=args.seed,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
