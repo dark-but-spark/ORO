@@ -10,7 +10,10 @@ from datetime import datetime
 
 
 def k_fold_cross_validation(k_folds=5, data_limit=None, scale=False, scale_factor=0.5, 
-                          epochs=50, batch_size=2, learning_rate=1e-4, device='cuda'):
+                          epochs=50, batch_size=2, learning_rate=1e-4, device='cuda',
+                          augmentation_strength='mild', early_stopping_patience=15,
+                          early_stopping_min_delta=0.0, save_model=False,
+                          save_dir='models/kfold'):
     """
     Perform k-fold cross validation for MultiResUNet
     
@@ -23,6 +26,11 @@ def k_fold_cross_validation(k_folds=5, data_limit=None, scale=False, scale_facto
         batch_size (int): Batch size for training
         learning_rate (float): Learning rate for optimizer
         device (str): Device to use for training ('cuda' or 'cpu')
+        augmentation_strength (str): Augmentation profile for training data
+        early_stopping_patience (int): Stop after this many epochs without val Dice improvement
+        early_stopping_min_delta (float): Minimum val Dice improvement to reset patience
+        save_model (bool): Whether to save best model checkpoints
+        save_dir (str): Base directory for fold checkpoints
     """
     
     # Get all file paths for dataset
@@ -65,7 +73,9 @@ def k_fold_cross_validation(k_folds=5, data_limit=None, scale=False, scale_facto
             img_files=train_img_files,
             mask_files=train_mask_files,
             scale=scale,
-            scale_factor=scale_factor
+            scale_factor=scale_factor,
+            apply_augmentation=True,
+            augmentation_strength=augmentation_strength
         )
         
         val_dataset = SegmentationDataset(
@@ -74,7 +84,9 @@ def k_fold_cross_validation(k_folds=5, data_limit=None, scale=False, scale_facto
             img_files=val_img_files,
             mask_files=val_mask_files,
             scale=scale,
-            scale_factor=scale_factor
+            scale_factor=scale_factor,
+            apply_augmentation=False,
+            augmentation_strength=augmentation_strength
         )
         
         # Create data loaders
@@ -108,8 +120,14 @@ def k_fold_cross_validation(k_folds=5, data_limit=None, scale=False, scale_facto
             batch_size=batch_size,
             device=device,
             learning_rate=learning_rate,
+            save_model=save_model,
+            save_dir=os.path.join(save_dir, f'fold_{fold+1}'),
             verbose=False,
-            log_dir=f'runs/kfold_fold_{fold+1}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            log_dir=f'runs/kfold_fold_{fold+1}_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+            train_augmentation=True,
+            val_augmentation=False,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta
         )
         
         # Evaluate model performance on validation set for this fold
@@ -160,6 +178,17 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cuda', 'cpu'],
                         help='Device to use for training (default: cuda)')
+    parser.add_argument('--augmentation-strength', type=str, default='mild',
+                        choices=['mild', 'strong'],
+                        help='Augmentation profile for training data (default: mild)')
+    parser.add_argument('--early-stopping-patience', type=int, default=15,
+                        help='Stop after this many epochs without val Dice improvement. Set 0 to disable (default: 15)')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=0.0,
+                        help='Minimum val Dice improvement required to reset early stopping (default: 0.0)')
+    parser.add_argument('--save-model', action='store_true',
+                        help='Save the best checkpoint for each fold')
+    parser.add_argument('--save-dir', type=str, default='models/kfold',
+                        help='Base directory for fold checkpoints (default: models/kfold)')
     
     return parser.parse_args()
 
@@ -180,6 +209,10 @@ if __name__ == "__main__":
     print(f"Batch Size: {args.batch_size}")
     print(f"Learning Rate: {args.learning_rate}")
     print(f"Device: {args.device}")
+    print(f"Augmentation Strength: {args.augmentation_strength}")
+    print(f"Early Stopping Patience: {args.early_stopping_patience}")
+    print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
+    print(f"Save Best Model: {args.save_model}")
     print("=" * 60)
     
     # Run k-fold cross validation
@@ -191,7 +224,12 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        device=args.device
+        device=args.device,
+        augmentation_strength=args.augmentation_strength,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta,
+        save_model=args.save_model,
+        save_dir=args.save_dir
     )
     
     print(f"\nFinal Results:")

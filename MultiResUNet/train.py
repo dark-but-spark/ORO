@@ -189,7 +189,7 @@ def parse_args():
     parser.add_argument('--scale', action='store_true',
                         help='Enable image scaling')
     parser.add_argument('--scale-factor', type=float, default=0.5,
-                        help='Scale factor for images (default: 0.5). E.g., 0.5 reduces to 50%, 1.5 increases to 150%')
+                        help='Scale factor for images (default: 0.5). E.g., 0.5 reduces to 50%%, 1.5 increases to 150%%')
     
     # Model arguments
     parser.add_argument('--input-channels', type=int, default=3,
@@ -227,6 +227,9 @@ def parse_args():
                         help='Disable augmentation for training data in streaming dataset mode')
     parser.add_argument('--val-augmentation', action='store_true',
                         help='Enable augmentation for validation data (default: disabled, usually keep off)')
+    parser.add_argument('--augmentation-strength', type=str, default='mild',
+                        choices=['mild', 'strong'],
+                        help='Augmentation profile for streaming dataset mode (default: mild)')
     parser.set_defaults(train_augmentation=True)
     
     # Logging and saving
@@ -275,6 +278,10 @@ def parse_args():
                         help='Multiplicative factor for StepLR/ExponentialLR schedulers (default: 0.1)')
     parser.add_argument('--lr-patience', type=int, default=10,
                         help='Patience for ReduceLROnPlateau scheduler (default: 10)')
+    parser.add_argument('--early-stopping-patience', type=int, default=15,
+                        help='Stop after this many epochs without val Dice improvement. Set 0 to disable (default: 15)')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=0.0,
+                        help='Minimum val Dice improvement required to reset early stopping (default: 0.0)')
     
     # Device selection
     parser.add_argument('--device', type=str, default='cuda',
@@ -318,6 +325,9 @@ def main():
     print(f"Repeat Factor: {args.repeat_factor}")
     print(f"Train Augmentation: {args.train_augmentation}")
     print(f"Validation Augmentation: {args.val_augmentation}")
+    print(f"Augmentation Strength: {args.augmentation_strength}")
+    print(f"Early Stopping Patience: {args.early_stopping_patience}")
+    print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
 
@@ -425,6 +435,7 @@ def main():
             repeat_factor=args.repeat_factor,
             train_apply_augmentation=args.train_augmentation,
             val_apply_augmentation=args.val_augmentation,
+            augmentation_strength=args.augmentation_strength,
             shuffle=True,
             seed=args.seed
         )
@@ -521,6 +532,8 @@ def main():
             val_augmentation=args.val_augmentation,
             repeat_factor=args.repeat_factor,
             seed=args.seed,
+            early_stopping_patience=args.early_stopping_patience,
+            early_stopping_min_delta=args.early_stopping_min_delta,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -612,6 +625,8 @@ def main():
             val_augmentation=False,
             repeat_factor=1,
             seed=args.seed,
+            early_stopping_patience=args.early_stopping_patience,
+            early_stopping_min_delta=args.early_stopping_min_delta,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,

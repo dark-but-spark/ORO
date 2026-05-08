@@ -480,7 +480,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
               # learning rate scheduler configuration
-              lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10):
+              lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10,
+              # early stopping configuration
+              early_stopping_patience=15, early_stopping_min_delta=0.0):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -512,6 +514,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         use_combined_loss {bool} -- Use combined BCE/Focal + Dice Loss (default: False)
         bce_weight {float} -- Weight for BCE/Focal loss in combined loss (default: 0.5)
         dice_weight {float} -- Weight for Dice loss in combined loss (default: 0.5)
+        early_stopping_patience {int} -- Epochs to wait for val Dice improvement before stopping. Set 0 to disable.
+        early_stopping_min_delta {float} -- Minimum val Dice improvement to reset early stopping.
     
     Returns:
         dict: Training history containing loss and metrics
@@ -658,6 +662,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'lr_step_size': lr_step_size,
                 'lr_gamma': lr_gamma,
                 'lr_patience': lr_patience,
+                'early_stopping_patience': early_stopping_patience,
+                'early_stopping_min_delta': early_stopping_min_delta,
                 
                 # DataLoader parameters
                 'num_workers': num_workers,
@@ -722,10 +728,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
 
     # Training loop
     history = {'loss': [], 'dice': [], 'jaccard': [], 'val_dice': [], 'val_jaccard': []}
-    best_val_dice = 0.0
+    best_val_dice = float('-inf')
+    best_val_jaccard = 0.0
+    best_epoch = 0
     avg_val_losses = []
     epochs_without_improvement = 0
-    early_stopping_patience = 15  # Number of epochs to wait before stopping if no improvement
+    early_stopping_enabled = early_stopping_patience is not None and early_stopping_patience > 0
     
     for epoch in range(epochs):
         model.train()  # Set model to training mode
@@ -777,20 +785,18 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['val_dice'].append(val_dice)
         history['val_jaccard'].append(val_jaccard)
 
-        # Track best validation dice and save model if improved
-        if val_dice > best_val_dice:
+        # Track best validation Dice and save the best checkpoint.
+        is_best = val_dice > best_val_dice + early_stopping_min_delta
+        if is_best:
             best_val_dice = val_dice
+            best_val_jaccard = val_jaccard
+            best_epoch = epoch + 1
             epochs_without_improvement = 0  # Reset counter when improvement occurs
             if save_model:
                 saveModel(model, model_dir=save_dir, model_name='best_model.pth')
+                print(f"  ✓ New best model saved by val Dice: {best_val_dice:.4f} (epoch {best_epoch})")
         else:
             epochs_without_improvement += 1
-
-        # Early stopping check
-        if epochs_without_improvement >= early_stopping_patience:
-            print(f"\n⚠️  Early stopping triggered after {early_stopping_patience} epochs without improvement.")
-            print(f"Best validation Dice: {best_val_dice:.4f} at epoch {epoch+1-epochs_without_improvement}")
-            break  # Exit the training loop
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -801,8 +807,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         print(f"Average Jaccard Index: {epoch_jaccard:.4f}")
         print(f"  Current learning rate: {current_lr:.6f}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
-        print(f"  Best Validation Dice: {best_val_dice:.4f}")
-        print(f"  Patience Counter: {epochs_without_improvement}/{early_stopping_patience}")
+        print(f"  Best Validation Dice: {best_val_dice:.4f} (epoch {best_epoch})")
+        if early_stopping_enabled:
+            print(f"  Patience Counter: {epochs_without_improvement}/{early_stopping_patience}")
         
         # Log to TensorBoard
         if writer is not None:
@@ -829,6 +836,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 writer.add_scalar('Metrics/jaccard', epoch_jaccard, epoch+1)
                 writer.add_scalar('Metrics/val_dice', val_dice, epoch+1)
                 writer.add_scalar('Metrics/val_jaccard', val_jaccard, epoch+1)
+                writer.add_scalar('Metrics/best_val_dice', best_val_dice, epoch+1)
+                writer.add_scalar('Metrics/best_epoch', best_epoch, epoch+1)
                 writer.add_scalar('Learning_rate', current_lr, epoch+1)
                 writer.flush()  # Force flush to prevent memory buildup
             except Exception as e:
@@ -846,6 +855,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         else:
             # For other schedulers, just call step()
             scheduler.step()
+
+        # Early stopping check after logging/checkpointing this epoch.
+        if early_stopping_enabled and epochs_without_improvement >= early_stopping_patience:
+            print(f"\n⚠️  Early stopping triggered after {early_stopping_patience} epochs without val Dice improvement.")
+            print(f"Best validation Dice: {best_val_dice:.4f} at epoch {best_epoch}")
+            break  # Exit the training loop
 
         # AGGRESSIVE memory cleanup after EVERY epoch (CRITICAL FIX - Enhanced)
         if device.type == 'cuda':
@@ -866,7 +881,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     print("\nTraining complete.")
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
     print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
-    print(f"Best Validation Dice: {best_val_dice:.4f}")
+    print(f"Best Validation Dice: {best_val_dice:.4f} at epoch {best_epoch}")
     
     # Close TensorBoard writer and log final hparams/metrics
     if writer is not None:
@@ -875,7 +890,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             # This should be done ONCE at the end, replacing the placeholder
             final_metrics = {
                 'final/val_dice': float(best_val_dice),
-                'final/val_jaccard': float(history['val_jaccard'][-1]),
+                'final/val_jaccard': float(best_val_jaccard),
+                'final/best_epoch': float(best_epoch),
                 'final/train_loss': float(history['loss'][-1]) if history['loss'] else 0.0,
                 'final/val_loss': float(avg_val_losses[-1]) if avg_val_losses else 0.0
             }
@@ -891,6 +907,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'lr_step_size': lr_step_size,
                 'lr_gamma': lr_gamma,
                 'lr_patience': lr_patience,
+                'early_stopping_patience': early_stopping_patience,
+                'early_stopping_min_delta': early_stopping_min_delta,
                 'num_workers': num_workers,
                 'prefetch_factor': prefetch_factor,
                 'save_model': save_model,

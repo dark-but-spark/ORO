@@ -20,7 +20,7 @@ class SegmentationDataset(Dataset):
     def __init__(self, img_dir, mask_dir, img_files=None, mask_files=None,
                  limit=None, transform=None, scale=False, scale_factor=0.5,
                  original_height=None, original_width=None, repeat_factor=1,
-                 apply_augmentation=True):
+                 apply_augmentation=True, augmentation_strength='mild'):
         """
         Args:
             img_dir (str): Directory containing image files
@@ -35,6 +35,7 @@ class SegmentationDataset(Dataset):
             original_width (int, optional): Original width of images for augmentation
             repeat_factor (int, optional): Number of times to repeat each image with different augmentation
             apply_augmentation (bool, optional): Whether to apply random augmentations to the data
+            augmentation_strength (str, optional): Augmentation profile: 'mild' or 'strong'
         """
         self.img_dir = img_dir
         self.mask_dir = mask_dir
@@ -45,6 +46,7 @@ class SegmentationDataset(Dataset):
         self.original_width = original_width
         self.repeat_factor = repeat_factor  # How many times to repeat each image with different augmentation
         self.apply_augmentation = apply_augmentation  # Whether to apply augmentations
+        self.augmentation_strength = augmentation_strength
         
         # Get file lists
         if img_files is None:
@@ -79,12 +81,37 @@ class SegmentationDataset(Dataset):
         if repeat_factor > 1:
             print(f"  Repeat factor: {repeat_factor} (effective samples: {len(img_files) * repeat_factor})")
         print(f"  Augmentation: {'Enabled' if apply_augmentation else 'Disabled'}")
+        if apply_augmentation:
+            print(f"  Augmentation strength: {augmentation_strength}")
     
     def __len__(self):
         return len(self.img_files)
     
     def apply_random_augmentations(self, img, mask):
         """Apply random augmentations to both image and mask consistently"""
+        if self.augmentation_strength == 'strong':
+            rotation_prob = 0.30
+            rotation_limit = 45
+            brightness_prob = 0.50
+            brightness_limit = 0.20
+            contrast_prob = 0.50
+            contrast_limit = 0.20
+            noise_prob = 0.30
+            noise_std = 0.01
+            zoom_prob = 0.30
+            zoom_limit = 0.10
+        else:
+            rotation_prob = 0.20
+            rotation_limit = 15
+            brightness_prob = 0.30
+            brightness_limit = 0.10
+            contrast_prob = 0.30
+            contrast_limit = 0.10
+            noise_prob = 0.15
+            noise_std = 0.005
+            zoom_prob = 0.20
+            zoom_limit = 0.05
+
         # Random horizontal flip
         if random.random() > 0.5:
             img = np.fliplr(img).copy()
@@ -96,9 +123,9 @@ class SegmentationDataset(Dataset):
             mask = np.flipud(mask).copy()
         
         # Random rotation (any angle) - with valid region extraction
-        if random.random() > 0.7:  # 30% chance to rotate
+        if random.random() < rotation_prob:
             # Generate a random angle in degrees
-            angle = random.uniform(-45, 45)  # Reduced range to avoid extreme distortions
+            angle = random.uniform(-rotation_limit, rotation_limit)
             
             # Get image dimensions
             h, w = img.shape[0], img.shape[1]
@@ -152,27 +179,24 @@ class SegmentationDataset(Dataset):
                 mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
         
         # Random brightness adjustment
-        if random.random() > 0.5:
-            # Adjust brightness by factor between 0.8 and 1.2
-            factor = random.uniform(0.8, 1.2)
+        if random.random() < brightness_prob:
+            factor = random.uniform(1.0 - brightness_limit, 1.0 + brightness_limit)
             img = np.clip(img * factor, 0, 1)
         
         # Random contrast adjustment
-        if random.random() > 0.5:
-            # Adjust contrast by factor between 0.8 and 1.2
-            factor = random.uniform(0.8, 1.2)
+        if random.random() < contrast_prob:
+            factor = random.uniform(1.0 - contrast_limit, 1.0 + contrast_limit)
             img_mean = img.mean(axis=(0, 1), keepdims=True)
             img = np.clip((img - img_mean) * factor + img_mean, 0, 1)
         
         # Random Gaussian noise
-        if random.random() > 0.7:  # 30% chance to add noise
-            noise = np.random.normal(0, 0.01, img.shape).astype(np.float32)
+        if random.random() < noise_prob:
+            noise = np.random.normal(0, noise_std, img.shape).astype(np.float32)
             img = np.clip(img + noise, 0, 1)
         
         # Random zoom - with improved handling
-        if random.random() > 0.7:  # 30% chance to zoom
-            zoom_factor = random.uniform(0.9, 1.1)  # More conservative zoom to reduce border effects
-                                               # Changed from (0.8, 1.2) to (0.9, 1.1)
+        if random.random() < zoom_prob:
+            zoom_factor = random.uniform(1.0 - zoom_limit, 1.0 + zoom_limit)
             
             # Calculate new size
             h, w = img.shape[0], img.shape[1]
@@ -344,7 +368,7 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    train_ratio=0.9, limit=None, val_ratio=0.1,
                    scale=False, scale_factor=0.5, original_height=None, original_width=None,
                    repeat_factor=1, train_apply_augmentation=True, val_apply_augmentation=False,
-                   shuffle=True, seed=42):
+                   shuffle=True, seed=42, augmentation_strength='mild'):
     """Create training and validation datasets without loading all data into memory.
     
     This function creates dataset objects that will load data on-demand,
@@ -365,6 +389,7 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         val_apply_augmentation (bool): Whether to apply augmentations to validation data
         shuffle (bool): Whether to shuffle file pairs before splitting train/validation
         seed (int): Random seed used for train/validation split shuffling
+        augmentation_strength (str): Augmentation profile for augmented datasets
     
     Returns:
         tuple: (train_dataset, val_dataset, n_train, n_val)
@@ -424,7 +449,8 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         original_height=original_height,
         original_width=original_width,
         repeat_factor=repeat_factor,
-        apply_augmentation=train_apply_augmentation
+        apply_augmentation=train_apply_augmentation,
+        augmentation_strength=augmentation_strength
     )
     
     val_dataset = SegmentationDataset(
@@ -439,7 +465,8 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         original_height=original_height,
         original_width=original_width,
         repeat_factor=1,  # Don't repeat validation images, only for training
-        apply_augmentation=val_apply_augmentation  # Usually we don't want augmentation on validation data
+        apply_augmentation=val_apply_augmentation,  # Usually we don't want augmentation on validation data
+        augmentation_strength=augmentation_strength
     )
     
     return train_dataset, val_dataset, n_train, n_val
