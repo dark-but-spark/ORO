@@ -228,8 +228,20 @@ def parse_args():
     parser.add_argument('--val-augmentation', action='store_true',
                         help='Enable augmentation for validation data (default: disabled, usually keep off)')
     parser.add_argument('--augmentation-strength', type=str, default='mild',
-                        choices=['mild', 'strong'],
+                        choices=['mild', 'moderate', 'strong'],
                         help='Augmentation profile for streaming dataset mode (default: mild)')
+    parser.add_argument('--augmentation-curriculum', type=str, default='none',
+                        choices=['none', 'linear', 'cosine'],
+                        help='Schedule augmentation strength over epochs (default: none)')
+    parser.add_argument('--curriculum-start-epoch', type=int, default=40,
+                        help='Epoch where augmentation curriculum starts increasing strength (default: 40)')
+    parser.add_argument('--curriculum-ramp-epochs', type=int, default=20,
+                        help='Epochs used to ramp augmentation strength (default: 20)')
+    parser.add_argument('--curriculum-max-aug-level', type=float, default=1.0,
+                        help='Max interpolation level toward target augmentation profile (default: 1.0)')
+    parser.add_argument('--curriculum-target-strength', type=str, default='moderate',
+                        choices=['mild', 'moderate', 'strong'],
+                        help='Target augmentation profile for curriculum (default: moderate)')
     parser.set_defaults(train_augmentation=True)
     
     # Logging and saving
@@ -282,6 +294,8 @@ def parse_args():
                         help='Stop after this many epochs without val Dice improvement. Set 0 to disable (default: 15)')
     parser.add_argument('--early-stopping-min-delta', type=float, default=0.0,
                         help='Minimum val Dice improvement required to reset early stopping (default: 0.0)')
+    parser.add_argument('--early-stopping-min-epochs', type=int, default=0,
+                        help='Disable early stopping before this epoch, useful with augmentation curriculum (default: 0)')
     
     # Device selection
     parser.add_argument('--device', type=str, default='cuda',
@@ -326,8 +340,13 @@ def main():
     print(f"Train Augmentation: {args.train_augmentation}")
     print(f"Validation Augmentation: {args.val_augmentation}")
     print(f"Augmentation Strength: {args.augmentation_strength}")
+    print(f"Augmentation Curriculum: {args.augmentation_curriculum}")
+    if args.augmentation_curriculum != 'none':
+        print(f"Curriculum: start=E{args.curriculum_start_epoch}, ramp={args.curriculum_ramp_epochs}, "
+              f"max_level={args.curriculum_max_aug_level}, target={args.curriculum_target_strength}")
     print(f"Early Stopping Patience: {args.early_stopping_patience}")
     print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
+    print(f"Early Stopping Min Epochs: {args.early_stopping_min_epochs}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
 
@@ -436,6 +455,8 @@ def main():
             train_apply_augmentation=args.train_augmentation,
             val_apply_augmentation=args.val_augmentation,
             augmentation_strength=args.augmentation_strength,
+            strong_aug_strength=args.curriculum_target_strength,
+            augmentation_schedule_level=0.0,
             shuffle=True,
             seed=args.seed
         )
@@ -534,6 +555,13 @@ def main():
             seed=args.seed,
             early_stopping_patience=args.early_stopping_patience,
             early_stopping_min_delta=args.early_stopping_min_delta,
+            early_stopping_min_epochs=args.early_stopping_min_epochs,
+            augmentation_curriculum=args.augmentation_curriculum,
+            curriculum_start_epoch=args.curriculum_start_epoch,
+            curriculum_ramp_epochs=args.curriculum_ramp_epochs,
+            curriculum_max_aug_level=args.curriculum_max_aug_level,
+            curriculum_base_strength=args.augmentation_strength,
+            curriculum_target_strength=args.curriculum_target_strength,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -627,6 +655,13 @@ def main():
             seed=args.seed,
             early_stopping_patience=args.early_stopping_patience,
             early_stopping_min_delta=args.early_stopping_min_delta,
+            early_stopping_min_epochs=args.early_stopping_min_epochs,
+            augmentation_curriculum=args.augmentation_curriculum,
+            curriculum_start_epoch=args.curriculum_start_epoch,
+            curriculum_ramp_epochs=args.curriculum_ramp_epochs,
+            curriculum_max_aug_level=args.curriculum_max_aug_level,
+            curriculum_base_strength=args.augmentation_strength,
+            curriculum_target_strength=args.curriculum_target_strength,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,

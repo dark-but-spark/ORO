@@ -20,7 +20,9 @@ class SegmentationDataset(Dataset):
     def __init__(self, img_dir, mask_dir, img_files=None, mask_files=None,
                  limit=None, transform=None, scale=False, scale_factor=0.5,
                  original_height=None, original_width=None, repeat_factor=1,
-                 apply_augmentation=True, augmentation_strength='mild'):
+                 apply_augmentation=True, augmentation_strength='mild',
+                 strong_aug_prob=0.0, strong_aug_strength='strong',
+                 augmentation_schedule_level=0.0):
         """
         Args:
             img_dir (str): Directory containing image files
@@ -35,7 +37,10 @@ class SegmentationDataset(Dataset):
             original_width (int, optional): Original width of images for augmentation
             repeat_factor (int, optional): Number of times to repeat each image with different augmentation
             apply_augmentation (bool, optional): Whether to apply random augmentations to the data
-            augmentation_strength (str, optional): Augmentation profile: 'mild' or 'strong'
+            augmentation_strength (str, optional): Base augmentation profile: 'mild', 'moderate', or 'strong'
+            strong_aug_prob (float, optional): Probability of sampling strong_aug_strength instead of augmentation_strength
+            strong_aug_strength (str, optional): Strong-side profile used for augmentation mixing
+            augmentation_schedule_level (float, optional): Interpolation level from augmentation_strength to strong_aug_strength
         """
         self.img_dir = img_dir
         self.mask_dir = mask_dir
@@ -47,6 +52,9 @@ class SegmentationDataset(Dataset):
         self.repeat_factor = repeat_factor  # How many times to repeat each image with different augmentation
         self.apply_augmentation = apply_augmentation  # Whether to apply augmentations
         self.augmentation_strength = augmentation_strength
+        self.strong_aug_prob = max(0.0, min(1.0, float(strong_aug_prob)))
+        self.strong_aug_strength = strong_aug_strength
+        self.augmentation_schedule_level = max(0.0, min(1.0, float(augmentation_schedule_level)))
         
         # Get file lists
         if img_files is None:
@@ -83,34 +91,100 @@ class SegmentationDataset(Dataset):
         print(f"  Augmentation: {'Enabled' if apply_augmentation else 'Disabled'}")
         if apply_augmentation:
             print(f"  Augmentation strength: {augmentation_strength}")
+            if self.strong_aug_prob > 0:
+                print(f"  Strong augmentation mix: {self.strong_aug_strength} p={self.strong_aug_prob:.2f}")
+            if self.augmentation_schedule_level > 0:
+                print(f"  Augmentation schedule level: {self.augmentation_schedule_level:.2f} -> {self.strong_aug_strength}")
     
     def __len__(self):
         return len(self.img_files)
+
+    def set_augmentation_mix(self, base_strength=None, strong_prob=None, strong_strength=None,
+                             schedule_level=None):
+        """Update augmentation mix. Called by the training loop between epochs."""
+        if base_strength is not None:
+            self.augmentation_strength = base_strength
+        if strong_prob is not None:
+            self.strong_aug_prob = max(0.0, min(1.0, float(strong_prob)))
+        if strong_strength is not None:
+            self.strong_aug_strength = strong_strength
+        if schedule_level is not None:
+            self.augmentation_schedule_level = max(0.0, min(1.0, float(schedule_level)))
+
+    def _sample_augmentation_strength(self):
+        if self.strong_aug_prob > 0 and random.random() < self.strong_aug_prob:
+            return self.strong_aug_strength
+        return self.augmentation_strength
+
+    def _augmentation_params(self, strength):
+        if strength == 'strong':
+            return {
+                'rotation_prob': 0.30,
+                'rotation_limit': 45,
+                'brightness_prob': 0.50,
+                'brightness_limit': 0.20,
+                'contrast_prob': 0.50,
+                'contrast_limit': 0.20,
+                'noise_prob': 0.30,
+                'noise_std': 0.01,
+                'zoom_prob': 0.30,
+                'zoom_limit': 0.10,
+            }
+        if strength == 'moderate':
+            return {
+                'rotation_prob': 0.25,
+                'rotation_limit': 30,
+                'brightness_prob': 0.40,
+                'brightness_limit': 0.15,
+                'contrast_prob': 0.40,
+                'contrast_limit': 0.15,
+                'noise_prob': 0.20,
+                'noise_std': 0.007,
+                'zoom_prob': 0.25,
+                'zoom_limit': 0.07,
+            }
+        return {
+            'rotation_prob': 0.20,
+            'rotation_limit': 15,
+            'brightness_prob': 0.30,
+            'brightness_limit': 0.10,
+            'contrast_prob': 0.30,
+            'contrast_limit': 0.10,
+            'noise_prob': 0.15,
+            'noise_std': 0.005,
+            'zoom_prob': 0.20,
+            'zoom_limit': 0.05,
+        }
+
+    def _interpolate_augmentation_params(self, start_strength, end_strength, level):
+        start_params = self._augmentation_params(start_strength)
+        end_params = self._augmentation_params(end_strength)
+        level = max(0.0, min(1.0, float(level)))
+        return {
+            key: start_params[key] + (end_params[key] - start_params[key]) * level
+            for key in start_params
+        }
     
     def apply_random_augmentations(self, img, mask):
         """Apply random augmentations to both image and mask consistently"""
-        if self.augmentation_strength == 'strong':
-            rotation_prob = 0.30
-            rotation_limit = 45
-            brightness_prob = 0.50
-            brightness_limit = 0.20
-            contrast_prob = 0.50
-            contrast_limit = 0.20
-            noise_prob = 0.30
-            noise_std = 0.01
-            zoom_prob = 0.30
-            zoom_limit = 0.10
+        if self.augmentation_schedule_level > 0:
+            params = self._interpolate_augmentation_params(
+                self.augmentation_strength,
+                self.strong_aug_strength,
+                self.augmentation_schedule_level
+            )
         else:
-            rotation_prob = 0.20
-            rotation_limit = 15
-            brightness_prob = 0.30
-            brightness_limit = 0.10
-            contrast_prob = 0.30
-            contrast_limit = 0.10
-            noise_prob = 0.15
-            noise_std = 0.005
-            zoom_prob = 0.20
-            zoom_limit = 0.05
+            params = self._augmentation_params(self._sample_augmentation_strength())
+        rotation_prob = params['rotation_prob']
+        rotation_limit = params['rotation_limit']
+        brightness_prob = params['brightness_prob']
+        brightness_limit = params['brightness_limit']
+        contrast_prob = params['contrast_prob']
+        contrast_limit = params['contrast_limit']
+        noise_prob = params['noise_prob']
+        noise_std = params['noise_std']
+        zoom_prob = params['zoom_prob']
+        zoom_limit = params['zoom_limit']
 
         # Random horizontal flip
         if random.random() > 0.5:
@@ -368,7 +442,9 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    train_ratio=0.9, limit=None, val_ratio=0.1,
                    scale=False, scale_factor=0.5, original_height=None, original_width=None,
                    repeat_factor=1, train_apply_augmentation=True, val_apply_augmentation=False,
-                   shuffle=True, seed=42, augmentation_strength='mild'):
+                   shuffle=True, seed=42, augmentation_strength='mild',
+                   strong_aug_prob=0.0, strong_aug_strength='strong',
+                   augmentation_schedule_level=0.0):
     """Create training and validation datasets without loading all data into memory.
     
     This function creates dataset objects that will load data on-demand,
@@ -389,7 +465,10 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         val_apply_augmentation (bool): Whether to apply augmentations to validation data
         shuffle (bool): Whether to shuffle file pairs before splitting train/validation
         seed (int): Random seed used for train/validation split shuffling
-        augmentation_strength (str): Augmentation profile for augmented datasets
+        augmentation_strength (str): Base augmentation profile for augmented datasets
+        strong_aug_prob (float): Probability of sampling strong_aug_strength for training samples
+        strong_aug_strength (str): Strong-side profile used for augmentation mixing
+        augmentation_schedule_level (float): Interpolation level from augmentation_strength to strong_aug_strength
     
     Returns:
         tuple: (train_dataset, val_dataset, n_train, n_val)
@@ -450,7 +529,10 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         original_width=original_width,
         repeat_factor=repeat_factor,
         apply_augmentation=train_apply_augmentation,
-        augmentation_strength=augmentation_strength
+        augmentation_strength=augmentation_strength,
+        strong_aug_prob=strong_aug_prob,
+        strong_aug_strength=strong_aug_strength,
+        augmentation_schedule_level=augmentation_schedule_level
     )
     
     val_dataset = SegmentationDataset(
@@ -466,7 +548,10 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         original_width=original_width,
         repeat_factor=1,  # Don't repeat validation images, only for training
         apply_augmentation=val_apply_augmentation,  # Usually we don't want augmentation on validation data
-        augmentation_strength=augmentation_strength
+        augmentation_strength=augmentation_strength,
+        strong_aug_prob=0.0,
+        strong_aug_strength=strong_aug_strength,
+        augmentation_schedule_level=0.0
     )
     
     return train_dataset, val_dataset, n_train, n_val

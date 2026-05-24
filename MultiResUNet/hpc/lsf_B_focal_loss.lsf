@@ -1,0 +1,15 @@
+#BSUB -J B_focal_loss
+#BSUB -n 4
+#BSUB -R "span[hosts=1]"
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -o lsf_logs/B_focal_loss.%J.out
+#BSUB -e lsf_logs/B_focal_loss.%J.err
+
+cd /work/phy-tongrj/MultiResUNet
+
+module load cuda/12.1
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate multiresunet
+
+python train.py --validation-split 0.1 --scale --scale-factor 0.5 --input-channels 3 --output-channels 4 --epochs 50 --batch-size 16 --learning-rate 2e-5 --gradient-clip 0.5 --weight-decay 2e-4 --num-workers 4 --prefetch-factor 2 --repeat-factor 1 --verbose --save-model --tensorboard --early-stopping-patience 8 --device cuda --seed 42 --save-dir models/B_focal_loss --log-dir runs/logs/B_focal_loss --no-train-augmentation --use-focal-loss --focal-alpha 0.25 --focal-gamma 1.0 --lr-scheduler cosine > run_logs/run_B_focal_loss.log 2>&1
+

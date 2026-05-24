@@ -1,0 +1,15 @@
+#BSUB -J A_plain_baseline
+#BSUB -n 4
+#BSUB -R "span[hosts=1]"
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -o lsf_logs/A_plain_baseline.%J.out
+#BSUB -e lsf_logs/A_plain_baseline.%J.err
+
+cd /work/phy-tongrj/MultiResUNet
+
+module load cuda/12.1
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate multiresunet
+
+python train.py --validation-split 0.1 --scale --scale-factor 0.5 --input-channels 3 --output-channels 4 --epochs 50 --batch-size 16 --learning-rate 2e-5 --gradient-clip 0.5 --weight-decay 2e-4 --num-workers 4 --prefetch-factor 2 --repeat-factor 1 --verbose --save-model --tensorboard --early-stopping-patience 8 --device cuda --seed 42 --save-dir models/A_plain_baseline --log-dir runs/logs/A_plain_baseline --no-train-augmentation --lr-scheduler cosine > run_logs/run_A_plain_baseline.log 2>&1
+

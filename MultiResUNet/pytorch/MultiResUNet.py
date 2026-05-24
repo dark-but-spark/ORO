@@ -482,7 +482,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               # learning rate scheduler configuration
               lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10,
               # early stopping configuration
-              early_stopping_patience=15, early_stopping_min_delta=0.0):
+              early_stopping_patience=15, early_stopping_min_delta=0.0,
+              early_stopping_min_epochs=0,
+              # augmentation curriculum configuration
+              augmentation_curriculum='none', curriculum_start_epoch=0,
+              curriculum_ramp_epochs=20, curriculum_max_aug_level=0.0,
+              curriculum_base_strength='mild', curriculum_target_strength='moderate'):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -516,6 +521,13 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         dice_weight {float} -- Weight for Dice loss in combined loss (default: 0.5)
         early_stopping_patience {int} -- Epochs to wait for val Dice improvement before stopping. Set 0 to disable.
         early_stopping_min_delta {float} -- Minimum val Dice improvement to reset early stopping.
+        early_stopping_min_epochs {int} -- Do not early stop before this epoch. Useful for augmentation curricula.
+        augmentation_curriculum {str} -- 'none', 'linear', or 'cosine'.
+        curriculum_start_epoch {int} -- Epoch where augmentation strength starts ramping up.
+        curriculum_ramp_epochs {int} -- Number of epochs used to ramp augmentation strength.
+        curriculum_max_aug_level {float} -- Max interpolation level toward curriculum_target_strength.
+        curriculum_base_strength {str} -- Base augmentation profile used before/alongside the curriculum.
+        curriculum_target_strength {str} -- Target augmentation profile used by the curriculum.
     
     Returns:
         dict: Training history containing loss and metrics
@@ -664,6 +676,13 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'lr_patience': lr_patience,
                 'early_stopping_patience': early_stopping_patience,
                 'early_stopping_min_delta': early_stopping_min_delta,
+                'early_stopping_min_epochs': early_stopping_min_epochs,
+                'augmentation_curriculum': augmentation_curriculum,
+                'curriculum_start_epoch': curriculum_start_epoch,
+                'curriculum_ramp_epochs': curriculum_ramp_epochs,
+                'curriculum_max_aug_level': curriculum_max_aug_level,
+                'curriculum_base_strength': curriculum_base_strength,
+                'curriculum_target_strength': curriculum_target_strength,
                 
                 # DataLoader parameters
                 'num_workers': num_workers,
@@ -727,15 +746,50 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     current_lr = learning_rate
 
     # Training loop
-    history = {'loss': [], 'dice': [], 'jaccard': [], 'val_dice': [], 'val_jaccard': []}
+    history = {
+        'loss': [],
+        'dice': [],
+        'jaccard': [],
+        'val_dice': [],
+        'val_jaccard': [],
+        'augmentation_schedule_level': []
+    }
     best_val_dice = float('-inf')
     best_val_jaccard = 0.0
     best_epoch = 0
     avg_val_losses = []
     epochs_without_improvement = 0
     early_stopping_enabled = early_stopping_patience is not None and early_stopping_patience > 0
+
+    def get_curriculum_level(epoch_number):
+        if augmentation_curriculum == 'none':
+            return 0.0
+        if epoch_number < curriculum_start_epoch:
+            return 0.0
+        if curriculum_ramp_epochs <= 0:
+            return float(curriculum_max_aug_level)
+        progress = (epoch_number - curriculum_start_epoch + 1) / float(curriculum_ramp_epochs)
+        progress = max(0.0, min(1.0, progress))
+        if augmentation_curriculum == 'cosine':
+            import math
+            progress = 0.5 - 0.5 * math.cos(math.pi * progress)
+        return float(curriculum_max_aug_level) * progress
+
+    def update_loader_augmentation(epoch_number):
+        schedule_level = get_curriculum_level(epoch_number)
+        dataset = getattr(train_loader, 'dataset', None)
+        if hasattr(dataset, 'set_augmentation_mix'):
+            dataset.set_augmentation_mix(
+                base_strength=curriculum_base_strength,
+                strong_prob=0.0,
+                strong_strength=curriculum_target_strength,
+                schedule_level=schedule_level
+            )
+        return schedule_level
     
     for epoch in range(epochs):
+        epoch_number = epoch + 1
+        augmentation_schedule_level = update_loader_augmentation(epoch_number)
         model.train()  # Set model to training mode
         running_loss = 0.0
         total_dice = 0.0
@@ -784,6 +838,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['jaccard'].append(epoch_jaccard)
         history['val_dice'].append(val_dice)
         history['val_jaccard'].append(val_jaccard)
+        history['augmentation_schedule_level'].append(augmentation_schedule_level)
 
         # Track best validation Dice and save the best checkpoint.
         is_best = val_dice > best_val_dice + early_stopping_min_delta
@@ -806,6 +861,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         print(f"Average Dice Coefficient: {epoch_dice:.4f}")
         print(f"Average Jaccard Index: {epoch_jaccard:.4f}")
         print(f"  Current learning rate: {current_lr:.6f}")
+        if augmentation_curriculum != 'none':
+            print(f"  Augmentation curriculum: {augmentation_curriculum}, level={augmentation_schedule_level:.3f}, target_profile={curriculum_target_strength}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
         print(f"  Best Validation Dice: {best_val_dice:.4f} (epoch {best_epoch})")
         if early_stopping_enabled:
@@ -839,6 +896,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 writer.add_scalar('Metrics/best_val_dice', best_val_dice, epoch+1)
                 writer.add_scalar('Metrics/best_epoch', best_epoch, epoch+1)
                 writer.add_scalar('Learning_rate', current_lr, epoch+1)
+                writer.add_scalar('Augmentation/schedule_level', augmentation_schedule_level, epoch+1)
                 writer.flush()  # Force flush to prevent memory buildup
             except Exception as e:
                 if epoch == 0:  # Only warn once
@@ -857,7 +915,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             scheduler.step()
 
         # Early stopping check after logging/checkpointing this epoch.
-        if early_stopping_enabled and epochs_without_improvement >= early_stopping_patience:
+        can_early_stop = (epoch + 1) >= early_stopping_min_epochs
+        if early_stopping_enabled and can_early_stop and epochs_without_improvement >= early_stopping_patience:
             print(f"\n⚠️  Early stopping triggered after {early_stopping_patience} epochs without val Dice improvement.")
             print(f"Best validation Dice: {best_val_dice:.4f} at epoch {best_epoch}")
             break  # Exit the training loop
@@ -909,6 +968,13 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'lr_patience': lr_patience,
                 'early_stopping_patience': early_stopping_patience,
                 'early_stopping_min_delta': early_stopping_min_delta,
+                'early_stopping_min_epochs': early_stopping_min_epochs,
+                'augmentation_curriculum': augmentation_curriculum,
+                'curriculum_start_epoch': curriculum_start_epoch,
+                'curriculum_ramp_epochs': curriculum_ramp_epochs,
+                'curriculum_max_aug_level': curriculum_max_aug_level,
+                'curriculum_base_strength': curriculum_base_strength,
+                'curriculum_target_strength': curriculum_target_strength,
                 'num_workers': num_workers,
                 'prefetch_factor': prefetch_factor,
                 'save_model': save_model,
