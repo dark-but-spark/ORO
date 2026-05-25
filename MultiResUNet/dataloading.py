@@ -164,17 +164,23 @@ class SegmentationDataset(Dataset):
             key: start_params[key] + (end_params[key] - start_params[key]) * level
             for key in start_params
         }
-    
-    def apply_random_augmentations(self, img, mask):
-        """Apply random augmentations to both image and mask consistently"""
+
+    def get_current_augmentation_params(self):
+        """Return the effective augmentation parameters for logging."""
         if self.augmentation_schedule_level > 0:
-            params = self._interpolate_augmentation_params(
+            return self._interpolate_augmentation_params(
                 self.augmentation_strength,
                 self.strong_aug_strength,
                 self.augmentation_schedule_level
             )
-        else:
+        return self._augmentation_params(self.augmentation_strength)
+    
+    def apply_random_augmentations(self, img, mask):
+        """Apply random augmentations to both image and mask consistently"""
+        if self.strong_aug_prob > 0 and self.augmentation_schedule_level <= 0:
             params = self._augmentation_params(self._sample_augmentation_strength())
+        else:
+            params = self.get_current_augmentation_params()
         rotation_prob = params['rotation_prob']
         rotation_limit = params['rotation_limit']
         brightness_prob = params['brightness_prob']

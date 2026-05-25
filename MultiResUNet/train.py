@@ -255,6 +255,10 @@ def parse_args():
                         help='Enable TensorBoard logging')
     parser.add_argument('--log-dir', type=str, default='runs/logs',
                         help='Directory for TensorBoard logs (default: runs/logs)')
+    parser.add_argument('--tb-image-interval', type=int, default=5,
+                        help='Epoch interval for TensorBoard validation prediction images. Set 0 to disable (default: 5)')
+    parser.add_argument('--tb-num-images', type=int, default=4,
+                        help='Number of validation samples to show in TensorBoard image panels (default: 4)')
     
     # Debugging options
     parser.add_argument('--debug', action='store_true',
@@ -334,6 +338,8 @@ def main():
     print(f"TensorBoard: {args.tensorboard}")
     if args.tensorboard:
         print(f"Log Directory: {args.log_dir}")
+        print(f"TensorBoard Image Interval: {args.tb_image_interval}")
+        print(f"TensorBoard Image Samples: {args.tb_num_images}")
     print(f"Num Workers: {args.num_workers}")
     print(f"Prefetch Factor: {args.prefetch_factor}")
     print(f"Repeat Factor: {args.repeat_factor}")
@@ -562,6 +568,8 @@ def main():
             curriculum_max_aug_level=args.curriculum_max_aug_level,
             curriculum_base_strength=args.augmentation_strength,
             curriculum_target_strength=args.curriculum_target_strength,
+            tb_image_interval=args.tb_image_interval,
+            tb_num_images=args.tb_num_images,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -662,6 +670,8 @@ def main():
             curriculum_max_aug_level=args.curriculum_max_aug_level,
             curriculum_base_strength=args.augmentation_strength,
             curriculum_target_strength=args.curriculum_target_strength,
+            tb_image_interval=args.tb_image_interval,
+            tb_num_images=args.tb_num_images,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,

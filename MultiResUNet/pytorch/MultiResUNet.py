@@ -1,4 +1,9 @@
 import gc  # Added for aggressive garbage collection
+import json
+import os
+import platform
+import sys
+import time
 from csv import writer
 
 import torch
@@ -379,6 +384,73 @@ def jacard(y_true, y_pred):
     jaccard = (intersection + smooth) / (union + smooth)
     return jaccard.mean()
 
+def per_class_segmentation_metrics(y_true, y_pred):
+    """Compute per-channel Dice and Jaccard for multi-label segmentation tensors."""
+    smooth = 1e-6
+    y_true_flat = y_true.reshape(y_true.size(0), y_true.size(1), -1)
+    y_pred_flat = y_pred.reshape(y_pred.size(0), y_pred.size(1), -1)
+
+    intersection = (y_true_flat * y_pred_flat).sum(dim=(0, 2))
+    true_sum = y_true_flat.sum(dim=(0, 2))
+    pred_sum = y_pred_flat.sum(dim=(0, 2))
+    dice = (2.0 * intersection + smooth) / (true_sum + pred_sum + smooth)
+    jaccard = (intersection + smooth) / (true_sum + pred_sum - intersection + smooth)
+    return dice.detach().cpu(), jaccard.detach().cpu()
+
+def _normalize_image_for_tensorboard(image_tensor):
+    image = image_tensor.detach().cpu()
+    if image.dim() == 2:
+        image = image.unsqueeze(0)
+    if image.size(0) == 1:
+        image = image.repeat(3, 1, 1)
+    elif image.size(0) > 3:
+        image = image[:3]
+    min_val = image.min()
+    max_val = image.max()
+    if (max_val - min_val) > 1e-6:
+        image = (image - min_val) / (max_val - min_val)
+    return image.clamp(0, 1)
+
+def _mask_to_rgb(mask_tensor):
+    mask = mask_tensor.detach().cpu().float()
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)
+    colors = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.3, 1.0],
+            [1.0, 0.8, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    rgb = torch.zeros(3, mask.shape[-2], mask.shape[-1], dtype=torch.float32)
+    for channel in range(mask.size(0)):
+        color = colors[channel % len(colors)].view(3, 1, 1)
+        rgb = torch.maximum(rgb, mask[channel].clamp(0, 1).unsqueeze(0) * color)
+    return rgb.clamp(0, 1)
+
+def _prediction_panel(image, target, prediction, probability):
+    image_rgb = _normalize_image_for_tensorboard(image)
+    target_rgb = _mask_to_rgb(target)
+    pred_rgb = _mask_to_rgb(prediction)
+    prob_rgb = _mask_to_rgb(probability)
+    false_positive = (prediction - target).clamp(min=0)
+    false_negative = (target - prediction).clamp(min=0)
+    error_rgb = torch.stack(
+        [
+            false_positive.max(dim=0).values.detach().cpu(),
+            false_negative.max(dim=0).values.detach().cpu(),
+            torch.zeros_like(false_positive.max(dim=0).values.detach().cpu()),
+        ],
+        dim=0,
+    ).clamp(0, 1)
+    gt_overlay = (0.65 * image_rgb + 0.35 * target_rgb).clamp(0, 1)
+    pred_overlay = (0.65 * image_rgb + 0.35 * pred_rgb).clamp(0, 1)
+    return torch.cat([image_rgb, target_rgb, pred_rgb, prob_rgb, error_rgb, gt_overlay, pred_overlay], dim=2)
+
 def saveModel(model, model_dir='models', model_name='model.pth'):
     """
     Save the model architecture and weights.
@@ -487,7 +559,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               # augmentation curriculum configuration
               augmentation_curriculum='none', curriculum_start_epoch=0,
               curriculum_ramp_epochs=20, curriculum_max_aug_level=0.0,
-              curriculum_base_strength='mild', curriculum_target_strength='moderate'):
+              curriculum_base_strength='mild', curriculum_target_strength='moderate',
+              # TensorBoard visualization configuration
+              tb_image_interval=5, tb_num_images=4):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -528,6 +602,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         curriculum_max_aug_level {float} -- Max interpolation level toward curriculum_target_strength.
         curriculum_base_strength {str} -- Base augmentation profile used before/alongside the curriculum.
         curriculum_target_strength {str} -- Target augmentation profile used by the curriculum.
+        tb_image_interval {int} -- Epoch interval for logging validation prediction panels. Set 0 to disable.
+        tb_num_images {int} -- Number of fixed validation samples to visualize.
     
     Returns:
         dict: Training history containing loss and metrics
@@ -649,6 +725,69 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         # Default to cosine annealing
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
 
+    param_count = sum(p.numel() for p in model.parameters())
+    trainable_param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    run_start_time = time.strftime('%Y-%m-%d %H:%M:%S')
+    hparams = {
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'learning_rate': learning_rate,
+        'gradient_clip': gradient_clip,
+        'weight_decay': weight_decay,
+        'lr_scheduler_type': lr_scheduler_type,
+        'lr_step_size': lr_step_size,
+        'lr_gamma': lr_gamma,
+        'lr_patience': lr_patience,
+        'early_stopping_patience': early_stopping_patience,
+        'early_stopping_min_delta': early_stopping_min_delta,
+        'early_stopping_min_epochs': early_stopping_min_epochs,
+        'augmentation_curriculum': augmentation_curriculum,
+        'curriculum_start_epoch': curriculum_start_epoch,
+        'curriculum_ramp_epochs': curriculum_ramp_epochs,
+        'curriculum_max_aug_level': curriculum_max_aug_level,
+        'curriculum_base_strength': curriculum_base_strength,
+        'curriculum_target_strength': curriculum_target_strength,
+        'tb_image_interval': tb_image_interval,
+        'tb_num_images': tb_num_images,
+        'num_workers': num_workers,
+        'prefetch_factor': prefetch_factor,
+        'save_model': save_model,
+        'save_dir': save_dir,
+        'scale': bool(scale),
+        'scale_factor': scale_factor,
+        'data_limit': data_limit if data_limit is not None else -1,
+        'validation_split': validation_split,
+        'input_channels': input_channels,
+        'output_channels': output_channels,
+        'train_augmentation': train_augmentation,
+        'val_augmentation': val_augmentation,
+        'repeat_factor': repeat_factor,
+        'seed': seed,
+        'use_focal_loss': use_focal_loss,
+        'focal_alpha': focal_alpha,
+        'focal_gamma': focal_gamma,
+        'use_combined_loss': use_combined_loss,
+        'bce_weight': bce_weight,
+        'dice_weight': dice_weight,
+        'device': str(device),
+        'param_count': param_count,
+        'trainable_param_count': trainable_param_count,
+        'python_version': sys.version.split()[0],
+        'torch_version': torch.__version__,
+        'platform': platform.platform(),
+        'run_start_time': run_start_time,
+    }
+
+    history_save_dir = log_dir if log_dir is not None else 'runs/history'
+    os.makedirs(history_save_dir, exist_ok=True)
+    config_path = os.path.join(history_save_dir, 'config.json')
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(hparams, f, indent=2, ensure_ascii=False, sort_keys=True)
+        print(f"Training config saved to '{config_path}'")
+    except Exception as e:
+        print(f"⚠ WARNING: Failed to save config.json: {e}")
+
     # Setup TensorBoard writer if log_dir is provided
     writer = None
     if log_dir is not None:
@@ -657,83 +796,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             writer = SummaryWriter(log_dir=log_dir)
             print(f"\n✓ TensorBoard logging enabled at: {log_dir}")
             
-            # Record comprehensive hyperparameters and configuration
-            import json
-            
-            # Construct complete hyperparameter dictionary
-            hparams = {
-                # Training hyperparameters
-                'epochs': epochs,
-                'batch_size': batch_size,
-                'learning_rate': learning_rate,
-                'gradient_clip': gradient_clip,
-                'weight_decay': weight_decay,
-                
-                # Scheduler parameters
-                'lr_scheduler_type': lr_scheduler_type,
-                'lr_step_size': lr_step_size,
-                'lr_gamma': lr_gamma,
-                'lr_patience': lr_patience,
-                'early_stopping_patience': early_stopping_patience,
-                'early_stopping_min_delta': early_stopping_min_delta,
-                'early_stopping_min_epochs': early_stopping_min_epochs,
-                'augmentation_curriculum': augmentation_curriculum,
-                'curriculum_start_epoch': curriculum_start_epoch,
-                'curriculum_ramp_epochs': curriculum_ramp_epochs,
-                'curriculum_max_aug_level': curriculum_max_aug_level,
-                'curriculum_base_strength': curriculum_base_strength,
-                'curriculum_target_strength': curriculum_target_strength,
-                
-                # DataLoader parameters
-                'num_workers': num_workers,
-                'prefetch_factor': prefetch_factor,
-                
-                # Model architecture
-                'input_channels': input_channels,
-                'output_channels': output_channels,
-                
-                # Data configuration
-                'data_limit': data_limit if data_limit else -1,  # -1 means all data
-                'validation_split': validation_split,
-                'scale': bool(scale),
-                'scale_factor': scale_factor,
-                'train_augmentation': train_augmentation,
-                'val_augmentation': val_augmentation,
-                'repeat_factor': repeat_factor,
-                'seed': seed,
-                
-                # Loss function configuration
-                'use_focal_loss': use_focal_loss,
-                'focal_alpha': focal_alpha,
-                'focal_gamma': focal_gamma,
-                'use_combined_loss': use_combined_loss,
-                'bce_weight': bce_weight,
-                'dice_weight': dice_weight,
-                
-                # Device info
-                'device': str(device),
-            }
-            
             # Add readable config text to TensorBoard
             config_text = json.dumps(hparams, indent=2)
             writer.add_text('Training_Config', config_text)
-            
-            # Register hyperparameters for comparison
-            filtered_hparams = {
-                k: v for k, v in hparams.items() 
-                if isinstance(v, (int, float, str, bool)) and not k.startswith('_')
-            }
-            
-            # Add placeholder metric for hparams registration
-            writer.add_hparams(
-                filtered_hparams,
-                {'hparam/placeholder': 0.0}
-            )
-            
-            # Flush immediately to ensure data is written
             writer.flush()
             
-            print(f"  ✓ Hyperparameters recorded")
+            print(f"  ✓ Configuration recorded")
             
         except ImportError:
             print("\n⚠ WARNING: TensorBoard not installed. Install with: pip install tensorboard")
@@ -750,9 +818,19 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'loss': [],
         'dice': [],
         'jaccard': [],
+        'val_loss': [],
         'val_dice': [],
         'val_jaccard': [],
-        'augmentation_schedule_level': []
+        'best_val_dice': [],
+        'best_epoch': [],
+        'learning_rate': [],
+        'early_stop_counter': [],
+        'train_val_dice_gap': [],
+        'train_val_jaccard_gap': [],
+        'augmentation_schedule_level': [],
+        'augmentation_params': [],
+        'val_class_dice': [],
+        'val_class_jaccard': []
     }
     best_val_dice = float('-inf')
     best_val_jaccard = 0.0
@@ -786,6 +864,74 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 schedule_level=schedule_level
             )
         return schedule_level
+
+    def current_augmentation_params():
+        dataset = getattr(train_loader, 'dataset', None)
+        if hasattr(dataset, 'get_current_augmentation_params'):
+            params = dataset.get_current_augmentation_params()
+            return {key: float(value) for key, value in params.items()}
+        return {}
+
+    def evaluate_with_details():
+        model.eval()
+        val_running_loss = 0.0
+        total_dice = 0.0
+        total_jaccard = 0.0
+        total_class_dice = None
+        total_class_jaccard = None
+        num_batches = 0
+
+        with torch.no_grad():
+            for X_val_batch, Y_val_batch in val_loader:
+                if device is not None:
+                    X_val_batch = X_val_batch.to(device)
+                    Y_val_batch = Y_val_batch.to(device)
+                Y_val_pred = model(X_val_batch)
+                val_loss = criterion(Y_val_pred, Y_val_batch)
+                Y_val_prob = torch.sigmoid(Y_val_pred)
+                Y_val_binary = (Y_val_prob >= 0.5).float()
+
+                batch_dice = dice_coef(Y_val_batch, Y_val_binary)
+                batch_jaccard = jacard(Y_val_batch, Y_val_binary)
+                class_dice, class_jaccard = per_class_segmentation_metrics(Y_val_batch, Y_val_binary)
+
+                val_running_loss += val_loss.item()
+                total_dice += batch_dice.item()
+                total_jaccard += batch_jaccard.item()
+                total_class_dice = class_dice if total_class_dice is None else total_class_dice + class_dice
+                total_class_jaccard = class_jaccard if total_class_jaccard is None else total_class_jaccard + class_jaccard
+                num_batches += 1
+
+        avg_val_loss = val_running_loss / max(1, num_batches)
+        avg_dice = total_dice / max(1, num_batches)
+        avg_jaccard = total_jaccard / max(1, num_batches)
+        avg_class_dice = (total_class_dice / max(1, num_batches)).tolist() if total_class_dice is not None else []
+        avg_class_jaccard = (total_class_jaccard / max(1, num_batches)).tolist() if total_class_jaccard is not None else []
+        return avg_val_loss, avg_dice, avg_jaccard, avg_class_dice, avg_class_jaccard
+
+    def log_validation_images(epoch_number):
+        if writer is None or tb_image_interval is None or tb_image_interval <= 0:
+            return
+        if epoch_number != 1 and epoch_number % tb_image_interval != 0:
+            return
+
+        model.eval()
+        panels = []
+        with torch.no_grad():
+            for X_vis, Y_vis in val_loader:
+                if device is not None:
+                    X_vis_device = X_vis.to(device)
+                else:
+                    X_vis_device = X_vis
+                Y_prob = torch.sigmoid(model(X_vis_device)).detach().cpu()
+                Y_pred = (Y_prob >= 0.5).float()
+                for idx in range(X_vis.size(0)):
+                    panels.append(_prediction_panel(X_vis[idx], Y_vis[idx], Y_pred[idx], Y_prob[idx]))
+                    if len(panels) >= tb_num_images:
+                        writer.add_images('Images/validation_panels', torch.stack(panels), epoch_number)
+                        return
+        if panels:
+            writer.add_images('Images/validation_panels', torch.stack(panels), epoch_number)
     
     for epoch in range(epochs):
         epoch_number = epoch + 1
@@ -829,16 +975,21 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         epoch_dice = total_dice / num_batches
         epoch_jaccard = total_jaccard / num_batches
 
-        # Evaluate on validation set
-        val_dice, val_jaccard = evaluateModel(model, val_loader=val_loader, device=device)
+        # Evaluate on validation set and collect all logging metrics in a single pass.
+        avg_val_loss, val_dice, val_jaccard, val_class_dice, val_class_jaccard = evaluate_with_details()
+        avg_val_losses.append(avg_val_loss)
+        model.train()
 
         # Update history
         history['loss'].append(epoch_loss)
         history['dice'].append(epoch_dice)
         history['jaccard'].append(epoch_jaccard)
+        history['val_loss'].append(avg_val_loss)
         history['val_dice'].append(val_dice)
         history['val_jaccard'].append(val_jaccard)
         history['augmentation_schedule_level'].append(augmentation_schedule_level)
+        history['val_class_dice'].append(val_class_dice)
+        history['val_class_jaccard'].append(val_class_jaccard)
 
         # Track best validation Dice and save the best checkpoint.
         is_best = val_dice > best_val_dice + early_stopping_min_delta
@@ -855,6 +1006,16 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
+        train_val_dice_gap = epoch_dice - val_dice
+        train_val_jaccard_gap = epoch_jaccard - val_jaccard
+        aug_params = current_augmentation_params()
+        history['best_val_dice'].append(best_val_dice)
+        history['best_epoch'].append(best_epoch)
+        history['learning_rate'].append(current_lr)
+        history['early_stop_counter'].append(epochs_without_improvement)
+        history['train_val_dice_gap'].append(train_val_dice_gap)
+        history['train_val_jaccard_gap'].append(train_val_jaccard_gap)
+        history['augmentation_params'].append(aug_params)
         
         # Print epoch summary with improved formatting (always show, not just in verbose mode)
         print(f"\nEpoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.4f}")
@@ -864,6 +1025,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         if augmentation_curriculum != 'none':
             print(f"  Augmentation curriculum: {augmentation_curriculum}, level={augmentation_schedule_level:.3f}, target_profile={curriculum_target_strength}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
+        print(f"  Validation Loss: {avg_val_loss:.4f}, Dice Gap: {train_val_dice_gap:+.4f}")
         print(f"  Best Validation Dice: {best_val_dice:.4f} (epoch {best_epoch})")
         if early_stopping_enabled:
             print(f"  Patience Counter: {epochs_without_improvement}/{early_stopping_patience}")
@@ -872,31 +1034,27 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         if writer is not None:
             try:
                 writer.add_scalar('Loss/train', epoch_loss, epoch+1)
-                # Use actual validation loss calculation for more accurate tracking
-                with torch.no_grad():
-                    model.eval()
-                    val_running_loss = 0.0
-                    val_batches = 0
-                    for X_val_batch, Y_val_batch in val_loader:
-                        if device is not None:
-                            X_val_batch, Y_val_batch = X_val_batch.to(device), Y_val_batch.to(device)
-                        Y_val_pred = model(X_val_batch)
-                        val_loss = criterion(Y_val_pred, Y_val_batch)
-                        val_running_loss += val_loss.item()
-                        val_batches += 1
-                    avg_val_loss = val_running_loss / val_batches
-                    avg_val_losses.append(avg_val_loss)
-                    writer.add_scalar('Loss/validation', avg_val_loss, epoch+1)
-                model.train()  # Switch back to training mode
-                
+                writer.add_scalar('Loss/validation', avg_val_loss, epoch+1)
+                writer.add_scalar('Loss/train_val_gap', epoch_loss - avg_val_loss, epoch+1)
                 writer.add_scalar('Metrics/dice', epoch_dice, epoch+1)
                 writer.add_scalar('Metrics/jaccard', epoch_jaccard, epoch+1)
                 writer.add_scalar('Metrics/val_dice', val_dice, epoch+1)
                 writer.add_scalar('Metrics/val_jaccard', val_jaccard, epoch+1)
+                writer.add_scalar('Metrics/train_val_dice_gap', train_val_dice_gap, epoch+1)
+                writer.add_scalar('Metrics/train_val_jaccard_gap', train_val_jaccard_gap, epoch+1)
                 writer.add_scalar('Metrics/best_val_dice', best_val_dice, epoch+1)
                 writer.add_scalar('Metrics/best_epoch', best_epoch, epoch+1)
                 writer.add_scalar('Learning_rate', current_lr, epoch+1)
+                writer.add_scalar('EarlyStopping/patience_counter', epochs_without_improvement, epoch+1)
+                writer.add_scalar('EarlyStopping/can_stop', 1.0 if (epoch + 1) >= early_stopping_min_epochs else 0.0, epoch+1)
                 writer.add_scalar('Augmentation/schedule_level', augmentation_schedule_level, epoch+1)
+                for key, value in aug_params.items():
+                    writer.add_scalar(f'Augmentation/{key}', value, epoch+1)
+                for class_idx, value in enumerate(val_class_dice):
+                    writer.add_scalar(f'Metrics/class_{class_idx}_val_dice', value, epoch+1)
+                for class_idx, value in enumerate(val_class_jaccard):
+                    writer.add_scalar(f'Metrics/class_{class_idx}_val_jaccard', value, epoch+1)
+                log_validation_images(epoch+1)
                 writer.flush()  # Force flush to prevent memory buildup
             except Exception as e:
                 if epoch == 0:  # Only warn once
@@ -941,6 +1099,43 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     print(f"Final Dice: {history['val_dice'][-1]:.4f}")
     print(f"Final Jaccard: {history['val_jaccard'][-1]:.4f}")
     print(f"Best Validation Dice: {best_val_dice:.4f} at epoch {best_epoch}")
+
+    completed_epochs = len(history['val_dice'])
+    best_index = best_epoch - 1 if best_epoch > 0 else None
+    summary = {
+        'run_start_time': run_start_time,
+        'run_end_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'completed_epochs': completed_epochs,
+        'stopped_early': completed_epochs < epochs,
+        'best_epoch': int(best_epoch),
+        'best_val_dice': float(best_val_dice),
+        'best_val_jaccard': float(best_val_jaccard),
+        'best_train_dice': float(history['dice'][best_index]) if best_index is not None else None,
+        'best_train_jaccard': float(history['jaccard'][best_index]) if best_index is not None else None,
+        'best_train_val_dice_gap': float(history['train_val_dice_gap'][best_index]) if best_index is not None else None,
+        'best_val_loss': float(history['val_loss'][best_index]) if best_index is not None else None,
+        'final_train_loss': float(history['loss'][-1]) if history['loss'] else None,
+        'final_val_loss': float(history['val_loss'][-1]) if history['val_loss'] else None,
+        'final_train_dice': float(history['dice'][-1]) if history['dice'] else None,
+        'final_val_dice': float(history['val_dice'][-1]) if history['val_dice'] else None,
+        'final_train_jaccard': float(history['jaccard'][-1]) if history['jaccard'] else None,
+        'final_val_jaccard': float(history['val_jaccard'][-1]) if history['val_jaccard'] else None,
+        'final_train_val_dice_gap': float(history['train_val_dice_gap'][-1]) if history['train_val_dice_gap'] else None,
+        'final_learning_rate': float(history['learning_rate'][-1]) if history['learning_rate'] else None,
+        'final_augmentation_schedule_level': float(history['augmentation_schedule_level'][-1]) if history['augmentation_schedule_level'] else None,
+        'final_augmentation_params': history['augmentation_params'][-1] if history['augmentation_params'] else {},
+        'best_model_path': os.path.join(save_dir, 'best_model.pth') if save_model else None,
+        'final_model_path': os.path.join(save_dir, 'model.pth') if save_model else None,
+        'config_path': config_path,
+    }
+
+    summary_path = os.path.join(history_save_dir, 'summary.json')
+    try:
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump({'summary': summary, 'config': hparams}, f, indent=2, ensure_ascii=False, sort_keys=True)
+        print(f"Training summary saved to '{summary_path}'")
+    except Exception as e:
+        print(f"⚠ WARNING: Failed to save summary.json: {e}")
     
     # Close TensorBoard writer and log final hparams/metrics
     if writer is not None:
@@ -952,43 +1147,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'final/val_jaccard': float(best_val_jaccard),
                 'final/best_epoch': float(best_epoch),
                 'final/train_loss': float(history['loss'][-1]) if history['loss'] else 0.0,
-                'final/val_loss': float(avg_val_losses[-1]) if avg_val_losses else 0.0
-            }
-            
-            # Use COMPLETE hparams (all training parameters)
-            hparams = {
-                'epochs': epochs,
-                'batch_size': batch_size,
-                'learning_rate': learning_rate,
-                'gradient_clip': gradient_clip,
-                'weight_decay': weight_decay,
-                'lr_scheduler_type': lr_scheduler_type,
-                'lr_step_size': lr_step_size,
-                'lr_gamma': lr_gamma,
-                'lr_patience': lr_patience,
-                'early_stopping_patience': early_stopping_patience,
-                'early_stopping_min_delta': early_stopping_min_delta,
-                'early_stopping_min_epochs': early_stopping_min_epochs,
-                'augmentation_curriculum': augmentation_curriculum,
-                'curriculum_start_epoch': curriculum_start_epoch,
-                'curriculum_ramp_epochs': curriculum_ramp_epochs,
-                'curriculum_max_aug_level': curriculum_max_aug_level,
-                'curriculum_base_strength': curriculum_base_strength,
-                'curriculum_target_strength': curriculum_target_strength,
-                'num_workers': num_workers,
-                'prefetch_factor': prefetch_factor,
-                'save_model': save_model,
-                'scale': bool(scale),
-                'scale_factor': scale_factor,
-                'data_limit': data_limit,
-                'validation_split': validation_split,
-                'input_channels': input_channels,
-                'output_channels': output_channels,
-                'train_augmentation': train_augmentation,
-                'val_augmentation': val_augmentation,
-                'repeat_factor': repeat_factor,
-                'seed': seed,
-                'device': str(device)
+                'final/val_loss': float(history['val_loss'][-1]) if history['val_loss'] else 0.0
             }
             
             # Log final metrics to replace placeholder
