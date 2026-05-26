@@ -560,6 +560,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               augmentation_curriculum='none', curriculum_start_epoch=0,
               curriculum_ramp_epochs=20, curriculum_max_aug_level=0.0,
               curriculum_base_strength='mild', curriculum_target_strength='moderate',
+              curriculum_level_step=0.05, curriculum_adapt_window=3,
+              curriculum_adapt_tolerance=0.002, curriculum_min_level_epochs=4,
               # TensorBoard visualization configuration
               tb_image_interval=5, tb_num_images=4):
     """
@@ -602,6 +604,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         curriculum_max_aug_level {float} -- Max interpolation level toward curriculum_target_strength.
         curriculum_base_strength {str} -- Base augmentation profile used before/alongside the curriculum.
         curriculum_target_strength {str} -- Target augmentation profile used by the curriculum.
+        curriculum_level_step {float} -- Adaptive level increment when validation recovers.
+        curriculum_adapt_window {int} -- Recent val Dice window used by adaptive curriculum.
+        curriculum_adapt_tolerance {float} -- Allowed Dice drop from the stage reference before holding level.
+        curriculum_min_level_epochs {int} -- Minimum epochs to spend at each adaptive level.
         tb_image_interval {int} -- Epoch interval for logging validation prediction panels. Set 0 to disable.
         tb_num_images {int} -- Number of fixed validation samples to visualize.
     
@@ -747,6 +753,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'curriculum_max_aug_level': curriculum_max_aug_level,
         'curriculum_base_strength': curriculum_base_strength,
         'curriculum_target_strength': curriculum_target_strength,
+        'curriculum_level_step': curriculum_level_step,
+        'curriculum_adapt_window': curriculum_adapt_window,
+        'curriculum_adapt_tolerance': curriculum_adapt_tolerance,
+        'curriculum_min_level_epochs': curriculum_min_level_epochs,
         'tb_image_interval': tb_image_interval,
         'tb_num_images': tb_num_images,
         'num_workers': num_workers,
@@ -828,6 +838,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'train_val_dice_gap': [],
         'train_val_jaccard_gap': [],
         'augmentation_schedule_level': [],
+        'adaptive_stage_reference': [],
+        'adaptive_recent_val_dice': [],
+        'adaptive_level_epochs': [],
+        'adaptive_level_changed': [],
         'augmentation_params': [],
         'val_class_dice': [],
         'val_class_jaccard': []
@@ -838,10 +852,17 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     avg_val_losses = []
     epochs_without_improvement = 0
     early_stopping_enabled = early_stopping_patience is not None and early_stopping_patience > 0
+    adaptive_level = 0.0
+    adaptive_stage_reference = None
+    adaptive_level_epochs = 0
+    adaptive_recent_val_dice = None
+    adaptive_level_changed = False
 
     def get_curriculum_level(epoch_number):
         if augmentation_curriculum == 'none':
             return 0.0
+        if augmentation_curriculum == 'adaptive':
+            return adaptive_level if epoch_number >= curriculum_start_epoch else 0.0
         if epoch_number < curriculum_start_epoch:
             return 0.0
         if curriculum_ramp_epochs <= 0:
@@ -864,6 +885,41 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 schedule_level=schedule_level
             )
         return schedule_level
+
+    def update_adaptive_curriculum_after_validation(epoch_number):
+        nonlocal adaptive_level
+        nonlocal adaptive_stage_reference
+        nonlocal adaptive_level_epochs
+        nonlocal adaptive_recent_val_dice
+        nonlocal adaptive_level_changed
+
+        adaptive_level_changed = False
+        adaptive_recent_val_dice = None
+        if augmentation_curriculum != 'adaptive':
+            return
+        if epoch_number < curriculum_start_epoch:
+            return
+
+        if adaptive_stage_reference is None:
+            previous_vals = history['val_dice'][:-1]
+            adaptive_stage_reference = max(previous_vals) if previous_vals else history['val_dice'][-1]
+
+        adaptive_level_epochs += 1
+        window = max(1, int(curriculum_adapt_window))
+        recent_values = history['val_dice'][-window:]
+        adaptive_recent_val_dice = sum(recent_values) / len(recent_values)
+        recovered = adaptive_recent_val_dice >= adaptive_stage_reference - curriculum_adapt_tolerance
+        waited_enough = adaptive_level_epochs >= max(1, int(curriculum_min_level_epochs))
+        can_increase = adaptive_level < curriculum_max_aug_level
+
+        if recovered and waited_enough and can_increase:
+            adaptive_level = min(
+                float(curriculum_max_aug_level),
+                adaptive_level + max(0.0, float(curriculum_level_step))
+            )
+            adaptive_stage_reference = max(adaptive_stage_reference, adaptive_recent_val_dice, best_val_dice)
+            adaptive_level_epochs = 0
+            adaptive_level_changed = True
 
     def current_augmentation_params():
         dataset = getattr(train_loader, 'dataset', None)
@@ -1004,6 +1060,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         else:
             epochs_without_improvement += 1
 
+        update_adaptive_curriculum_after_validation(epoch_number)
+
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         train_val_dice_gap = epoch_dice - val_dice
@@ -1015,6 +1073,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['early_stop_counter'].append(epochs_without_improvement)
         history['train_val_dice_gap'].append(train_val_dice_gap)
         history['train_val_jaccard_gap'].append(train_val_jaccard_gap)
+        history['adaptive_stage_reference'].append(
+            float(adaptive_stage_reference) if adaptive_stage_reference is not None else None
+        )
+        history['adaptive_recent_val_dice'].append(
+            float(adaptive_recent_val_dice) if adaptive_recent_val_dice is not None else None
+        )
+        history['adaptive_level_epochs'].append(adaptive_level_epochs)
+        history['adaptive_level_changed'].append(bool(adaptive_level_changed))
         history['augmentation_params'].append(aug_params)
         
         # Print epoch summary with improved formatting (always show, not just in verbose mode)
@@ -1024,6 +1090,11 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         print(f"  Current learning rate: {current_lr:.6f}")
         if augmentation_curriculum != 'none':
             print(f"  Augmentation curriculum: {augmentation_curriculum}, level={augmentation_schedule_level:.3f}, target_profile={curriculum_target_strength}")
+            if augmentation_curriculum == 'adaptive':
+                print(f"  Adaptive state: next_level={adaptive_level:.3f}, "
+                      f"stage_ref={adaptive_stage_reference if adaptive_stage_reference is not None else 'NA'}, "
+                      f"recent={adaptive_recent_val_dice if adaptive_recent_val_dice is not None else 'NA'}, "
+                      f"level_epochs={adaptive_level_epochs}, changed={adaptive_level_changed}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
         print(f"  Validation Loss: {avg_val_loss:.4f}, Dice Gap: {train_val_dice_gap:+.4f}")
         print(f"  Best Validation Dice: {best_val_dice:.4f} (epoch {best_epoch})")
@@ -1048,6 +1119,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 writer.add_scalar('EarlyStopping/patience_counter', epochs_without_improvement, epoch+1)
                 writer.add_scalar('EarlyStopping/can_stop', 1.0 if (epoch + 1) >= early_stopping_min_epochs else 0.0, epoch+1)
                 writer.add_scalar('Augmentation/schedule_level', augmentation_schedule_level, epoch+1)
+                if augmentation_curriculum == 'adaptive':
+                    writer.add_scalar('Augmentation/adaptive_next_level', adaptive_level, epoch+1)
+                    writer.add_scalar('Augmentation/adaptive_level_changed', 1.0 if adaptive_level_changed else 0.0, epoch+1)
+                    writer.add_scalar('Augmentation/adaptive_level_epochs', adaptive_level_epochs, epoch+1)
+                    if adaptive_stage_reference is not None:
+                        writer.add_scalar('Augmentation/adaptive_stage_reference', adaptive_stage_reference, epoch+1)
+                    if adaptive_recent_val_dice is not None:
+                        writer.add_scalar('Augmentation/adaptive_recent_val_dice', adaptive_recent_val_dice, epoch+1)
                 for key, value in aug_params.items():
                     writer.add_scalar(f'Augmentation/{key}', value, epoch+1)
                 for class_idx, value in enumerate(val_class_dice):
@@ -1123,6 +1202,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'final_train_val_dice_gap': float(history['train_val_dice_gap'][-1]) if history['train_val_dice_gap'] else None,
         'final_learning_rate': float(history['learning_rate'][-1]) if history['learning_rate'] else None,
         'final_augmentation_schedule_level': float(history['augmentation_schedule_level'][-1]) if history['augmentation_schedule_level'] else None,
+        'final_adaptive_next_level': float(adaptive_level) if augmentation_curriculum == 'adaptive' else None,
+        'final_adaptive_stage_reference': float(adaptive_stage_reference) if adaptive_stage_reference is not None else None,
         'final_augmentation_params': history['augmentation_params'][-1] if history['augmentation_params'] else {},
         'best_model_path': os.path.join(save_dir, 'best_model.pth') if save_model else None,
         'final_model_path': os.path.join(save_dir, 'model.pth') if save_model else None,

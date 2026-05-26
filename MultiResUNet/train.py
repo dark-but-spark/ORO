@@ -231,7 +231,7 @@ def parse_args():
                         choices=['mild', 'moderate', 'strong'],
                         help='Augmentation profile for streaming dataset mode (default: mild)')
     parser.add_argument('--augmentation-curriculum', type=str, default='none',
-                        choices=['none', 'linear', 'cosine'],
+                        choices=['none', 'linear', 'cosine', 'adaptive'],
                         help='Schedule augmentation strength over epochs (default: none)')
     parser.add_argument('--curriculum-start-epoch', type=int, default=40,
                         help='Epoch where augmentation curriculum starts increasing strength (default: 40)')
@@ -242,6 +242,14 @@ def parse_args():
     parser.add_argument('--curriculum-target-strength', type=str, default='moderate',
                         choices=['mild', 'moderate', 'strong'],
                         help='Target augmentation profile for curriculum (default: moderate)')
+    parser.add_argument('--curriculum-level-step', type=float, default=0.05,
+                        help='Adaptive curriculum level increment when validation recovers (default: 0.05)')
+    parser.add_argument('--curriculum-adapt-window', type=int, default=3,
+                        help='Recent validation Dice window for adaptive curriculum decisions (default: 3)')
+    parser.add_argument('--curriculum-adapt-tolerance', type=float, default=0.002,
+                        help='Allowed Dice drop from stage reference before holding adaptive level (default: 0.002)')
+    parser.add_argument('--curriculum-min-level-epochs', type=int, default=4,
+                        help='Minimum epochs to train at each adaptive curriculum level before increasing (default: 4)')
     parser.set_defaults(train_augmentation=True)
     
     # Logging and saving
@@ -350,6 +358,10 @@ def main():
     if args.augmentation_curriculum != 'none':
         print(f"Curriculum: start=E{args.curriculum_start_epoch}, ramp={args.curriculum_ramp_epochs}, "
               f"max_level={args.curriculum_max_aug_level}, target={args.curriculum_target_strength}")
+        if args.augmentation_curriculum == 'adaptive':
+            print(f"Adaptive Curriculum: step={args.curriculum_level_step}, "
+                  f"window={args.curriculum_adapt_window}, tolerance={args.curriculum_adapt_tolerance}, "
+                  f"min_level_epochs={args.curriculum_min_level_epochs}")
     print(f"Early Stopping Patience: {args.early_stopping_patience}")
     print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
     print(f"Early Stopping Min Epochs: {args.early_stopping_min_epochs}")
@@ -568,6 +580,10 @@ def main():
             curriculum_max_aug_level=args.curriculum_max_aug_level,
             curriculum_base_strength=args.augmentation_strength,
             curriculum_target_strength=args.curriculum_target_strength,
+            curriculum_level_step=args.curriculum_level_step,
+            curriculum_adapt_window=args.curriculum_adapt_window,
+            curriculum_adapt_tolerance=args.curriculum_adapt_tolerance,
+            curriculum_min_level_epochs=args.curriculum_min_level_epochs,
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
             # Loss function configuration for sparse/imbalanced datasets
@@ -670,6 +686,10 @@ def main():
             curriculum_max_aug_level=args.curriculum_max_aug_level,
             curriculum_base_strength=args.augmentation_strength,
             curriculum_target_strength=args.curriculum_target_strength,
+            curriculum_level_step=args.curriculum_level_step,
+            curriculum_adapt_window=args.curriculum_adapt_window,
+            curriculum_adapt_tolerance=args.curriculum_adapt_tolerance,
+            curriculum_min_level_epochs=args.curriculum_min_level_epochs,
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
             # Loss function configuration for sparse/imbalanced datasets
