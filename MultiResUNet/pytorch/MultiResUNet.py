@@ -1244,7 +1244,6 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
 
     # Save training history to the same directory as TensorBoard logs if available
     import numpy as np
-    import os
     history_save_dir = log_dir if log_dir is not None else 'runs/history'
     os.makedirs(history_save_dir, exist_ok=True)
     history_path = os.path.join(history_save_dir, 'training_history.npy')
