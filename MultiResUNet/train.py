@@ -287,6 +287,8 @@ def parse_args():
                         help='Weight for BCE/Focal loss in combined loss (default: 0.5)')
     parser.add_argument('--dice-weight', type=float, default=0.5,
                         help='Weight for Dice loss in combined loss (default: 0.5)')
+    parser.add_argument('--class-weights', type=float, nargs='+', default=None,
+                        help='Optional per-output-channel loss weights, e.g. --class-weights 1 1 2 1')
     
     # Regularization parameters
     parser.add_argument('--dropout-rate', type=float, default=0.2,
@@ -323,6 +325,10 @@ def parse_args():
 def main():
     # Parse command line arguments
     args = parse_args()
+    if args.class_weights is not None and len(args.class_weights) != args.output_channels:
+        raise ValueError(
+            f"--class-weights expects {args.output_channels} values, got {len(args.class_weights)}"
+        )
     
     # Print configuration
     print("=" * 60)
@@ -365,6 +371,7 @@ def main():
     print(f"Early Stopping Patience: {args.early_stopping_patience}")
     print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
     print(f"Early Stopping Min Epochs: {args.early_stopping_min_epochs}")
+    print(f"Class Weights: {args.class_weights if args.class_weights is not None else 'None'}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
 
@@ -593,6 +600,7 @@ def main():
             use_combined_loss=args.use_combined_loss,
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
+            class_weights=args.class_weights,
             # Learning rate scheduler parameters
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,
@@ -699,6 +707,7 @@ def main():
             use_combined_loss=args.use_combined_loss,
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
+            class_weights=args.class_weights,
             # Learning rate scheduler parameters
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,

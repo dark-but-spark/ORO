@@ -11,6 +11,46 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _class_weight_tensor(class_weights):
+    if class_weights is None:
+        return None
+    if isinstance(class_weights, torch.Tensor):
+        weights = class_weights.detach().clone().float()
+    else:
+        weights = torch.tensor(class_weights, dtype=torch.float32)
+    if weights.dim() != 1:
+        raise ValueError("class_weights must be a 1D list/tensor with one value per output channel")
+    if torch.any(weights <= 0):
+        raise ValueError("class_weights values must be positive")
+    return weights
+
+
+def _class_weight_view(class_weights, inputs):
+    if class_weights is None:
+        return None
+    return class_weights.to(inputs.device, dtype=inputs.dtype).view(1, -1, 1, 1)
+
+
+class WeightedBCEWithLogitsLoss(nn.Module):
+    """BCEWithLogitsLoss with optional per-channel weights."""
+    def __init__(self, class_weights=None):
+        super().__init__()
+        weights = _class_weight_tensor(class_weights)
+        if weights is not None:
+            self.register_buffer('class_weights', weights)
+        else:
+            self.class_weights = None
+
+    def forward(self, inputs, targets):
+        loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        weights = _class_weight_view(self.class_weights, inputs)
+        if weights is not None:
+            if weights.size(1) != inputs.size(1):
+                raise ValueError(f"class_weights length {weights.size(1)} does not match output channels {inputs.size(1)}")
+            loss = loss * weights
+        return loss.mean()
+
+
 class FocalLoss(nn.Module):
     """
     Focal Loss for handling class imbalance in semantic segmentation
@@ -26,11 +66,16 @@ class FocalLoss(nn.Module):
         Lin, T.Y., Goyal, P., Girshick, R., He, K. and Dollar, P., 2017. 
         Focal loss for dense object detection. ICCV 2017.
     """
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean', class_weights=None):
         super(FocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
+        weights = _class_weight_tensor(class_weights)
+        if weights is not None:
+            self.register_buffer('class_weights', weights)
+        else:
+            self.class_weights = None
     
     def forward(self, inputs, targets):
         # Sigmoid activation
@@ -49,6 +94,11 @@ class FocalLoss(nn.Module):
         
         # Final focal loss
         focal_loss = alpha_factor * focal_weight * bce_loss
+        weights = _class_weight_view(self.class_weights, inputs)
+        if weights is not None:
+            if weights.size(1) != inputs.size(1):
+                raise ValueError(f"class_weights length {weights.size(1)} does not match output channels {inputs.size(1)}")
+            focal_loss = focal_loss * weights
         
         # Reduction
         if self.reduction == 'mean':
@@ -66,13 +116,29 @@ class DiceLoss(nn.Module):
     Arguments:
         smooth {float} -- Smoothing factor to avoid division by zero (default: 1.0)
     """
-    def __init__(self, smooth=1.0):
+    def __init__(self, smooth=1.0, class_weights=None):
         super(DiceLoss, self).__init__()
         self.smooth = smooth
+        weights = _class_weight_tensor(class_weights)
+        if weights is not None:
+            self.register_buffer('class_weights', weights)
+        else:
+            self.class_weights = None
     
     def forward(self, inputs, targets):
         # Sigmoid activation
         inputs = torch.sigmoid(inputs)
+
+        if self.class_weights is not None:
+            if self.class_weights.numel() != inputs.size(1):
+                raise ValueError(f"class_weights length {self.class_weights.numel()} does not match output channels {inputs.size(1)}")
+            inputs_flat = inputs.reshape(inputs.size(0), inputs.size(1), -1)
+            targets_flat = targets.reshape(targets.size(0), targets.size(1), -1)
+            intersection = (inputs_flat * targets_flat).sum(dim=(0, 2))
+            union = inputs_flat.sum(dim=(0, 2)) + targets_flat.sum(dim=(0, 2))
+            dice_loss = 1 - (2. * intersection + self.smooth) / (union + self.smooth)
+            weights = self.class_weights.to(inputs.device, dtype=inputs.dtype)
+            return (dice_loss * weights).sum() / weights.sum()
         
         # Flatten tensors
         inputs = inputs.view(-1)
@@ -96,17 +162,18 @@ class CombinedLoss(nn.Module):
         alpha {float} -- Focal Loss alpha parameter (default: 0.25)
         gamma {float} -- Focal Loss gamma parameter (default: 2.0)
     """
-    def __init__(self, bce_weight=0.5, dice_weight=0.5, use_focal=False, alpha=0.25, gamma=2.0):
+    def __init__(self, bce_weight=0.5, dice_weight=0.5, use_focal=False, alpha=0.25, gamma=2.0,
+                 class_weights=None):
         super(CombinedLoss, self).__init__()
         self.bce_weight = bce_weight
         self.dice_weight = dice_weight
         
         if use_focal:
-            self.bce_loss = FocalLoss(alpha=alpha, gamma=gamma)
+            self.bce_loss = FocalLoss(alpha=alpha, gamma=gamma, class_weights=class_weights)
         else:
-            self.bce_loss = nn.BCEWithLogitsLoss()
+            self.bce_loss = WeightedBCEWithLogitsLoss(class_weights=class_weights)
         
-        self.dice_loss = DiceLoss(smooth=1.0)
+        self.dice_loss = DiceLoss(smooth=1.0, class_weights=class_weights)
     
     def forward(self, inputs, targets):
         bce = self.bce_loss(inputs, targets)
@@ -551,6 +618,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
+              class_weights=None,
               # learning rate scheduler configuration
               lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10,
               # early stopping configuration
@@ -595,6 +663,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         use_combined_loss {bool} -- Use combined BCE/Focal + Dice Loss (default: False)
         bce_weight {float} -- Weight for BCE/Focal loss in combined loss (default: 0.5)
         dice_weight {float} -- Weight for Dice loss in combined loss (default: 0.5)
+        class_weights {list[float]} -- Optional per-output-channel loss weights.
         early_stopping_patience {int} -- Epochs to wait for val Dice improvement before stopping. Set 0 to disable.
         early_stopping_min_delta {float} -- Minimum val Dice improvement to reset early stopping.
         early_stopping_min_epochs {int} -- Do not early stop before this epoch. Useful for augmentation curricula.
@@ -679,6 +748,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         print(f"\nUsing Combined Loss (BCE/Focal + Dice)")
         print(f"  BCE/Focal weight: {bce_weight:.1f}")
         print(f"  Dice weight: {dice_weight:.1f}")
+        if class_weights is not None:
+            print(f"  Class weights: {class_weights}")
         if use_focal_loss:
             print(f"  Using Focal Loss with alpha={focal_alpha}, gamma={focal_gamma}")
         criterion = CombinedLoss(
@@ -686,15 +757,20 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             dice_weight=dice_weight,
             use_focal=use_focal_loss,
             alpha=focal_alpha,
-            gamma=focal_gamma
+            gamma=focal_gamma,
+            class_weights=class_weights
         )
     elif use_focal_loss:
         print(f"\nUsing Focal Loss (recommended for sparse/imbalanced datasets)")
         print(f"  Alpha: {focal_alpha}, Gamma: {focal_gamma}")
-        criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+        if class_weights is not None:
+            print(f"  Class weights: {class_weights}")
+        criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma, class_weights=class_weights)
     else:
         print(f"\nUsing BCEWithLogitsLoss")
-        criterion = nn.BCEWithLogitsLoss()
+        if class_weights is not None:
+            print(f"  Class weights: {class_weights}")
+        criterion = WeightedBCEWithLogitsLoss(class_weights=class_weights)
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
@@ -779,6 +855,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'use_combined_loss': use_combined_loss,
         'bce_weight': bce_weight,
         'dice_weight': dice_weight,
+        'class_weights': class_weights if class_weights is not None else [],
         'device': str(device),
         'param_count': param_count,
         'trainable_param_count': trainable_param_count,
