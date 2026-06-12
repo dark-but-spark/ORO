@@ -464,6 +464,29 @@ def per_class_segmentation_metrics(y_true, y_pred):
     jaccard = (intersection + smooth) / (true_sum + pred_sum - intersection + smooth)
     return dice.detach().cpu(), jaccard.detach().cpu()
 
+
+def predict_prob_with_tta(model, inputs, tta_mode='none'):
+    """Return sigmoid probabilities, optionally averaged over simple flip TTA."""
+    if tta_mode is None or tta_mode == 'none':
+        return torch.sigmoid(model(inputs))
+    if tta_mode != 'flips':
+        raise ValueError(f"Unsupported val_tta mode: {tta_mode}")
+
+    transforms = [
+        (None, None),
+        ((3,), (3,)),
+        ((2,), (2,)),
+        ((2, 3), (2, 3)),
+    ]
+    probs = []
+    for forward_dims, inverse_dims in transforms:
+        augmented = torch.flip(inputs, dims=forward_dims) if forward_dims is not None else inputs
+        pred = torch.sigmoid(model(augmented))
+        if inverse_dims is not None:
+            pred = torch.flip(pred, dims=inverse_dims)
+        probs.append(pred)
+    return torch.stack(probs, dim=0).mean(dim=0)
+
 def _normalize_image_for_tensorboard(image_tensor):
     image = image_tensor.detach().cpu()
     if image.dim() == 2:
@@ -614,6 +637,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               # additional run config for logging
               scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
               input_channels=3, output_channels=4,
+              model_architecture='multiresunet', encoder_name=None, encoder_weights=None,
               train_augmentation=False, val_augmentation=False, repeat_factor=1, seed=42,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
@@ -631,7 +655,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               curriculum_level_step=0.05, curriculum_adapt_window=3,
               curriculum_adapt_tolerance=0.002, curriculum_min_level_epochs=4,
               # TensorBoard visualization configuration
-              tb_image_interval=5, tb_num_images=4):
+              tb_image_interval=5, tb_num_images=4, val_tta='none'):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -679,6 +703,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         curriculum_min_level_epochs {int} -- Minimum epochs to spend at each adaptive level.
         tb_image_interval {int} -- Epoch interval for logging validation prediction panels. Set 0 to disable.
         tb_num_images {int} -- Number of fixed validation samples to visualize.
+        val_tta {str} -- Validation-time test-time augmentation: 'none' or 'flips'.
     
     Returns:
         dict: Training history containing loss and metrics
@@ -771,6 +796,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         if class_weights is not None:
             print(f"  Class weights: {class_weights}")
         criterion = WeightedBCEWithLogitsLoss(class_weights=class_weights)
+
+    if val_tta != 'none':
+        print(f"\nValidation TTA enabled: {val_tta}")
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
@@ -835,6 +863,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'curriculum_min_level_epochs': curriculum_min_level_epochs,
         'tb_image_interval': tb_image_interval,
         'tb_num_images': tb_num_images,
+        'val_tta': val_tta,
         'num_workers': num_workers,
         'prefetch_factor': prefetch_factor,
         'save_model': save_model,
@@ -845,6 +874,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'validation_split': validation_split,
         'input_channels': input_channels,
         'output_channels': output_channels,
+        'model_architecture': model_architecture,
+        'encoder_name': encoder_name if encoder_name is not None else '',
+        'encoder_weights': encoder_weights if encoder_weights is not None else '',
         'train_augmentation': train_augmentation,
         'val_augmentation': val_augmentation,
         'repeat_factor': repeat_factor,
@@ -1021,7 +1053,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                     Y_val_batch = Y_val_batch.to(device)
                 Y_val_pred = model(X_val_batch)
                 val_loss = criterion(Y_val_pred, Y_val_batch)
-                Y_val_prob = torch.sigmoid(Y_val_pred)
+                Y_val_prob = predict_prob_with_tta(model, X_val_batch, val_tta)
                 Y_val_binary = (Y_val_prob >= 0.5).float()
 
                 batch_dice = dice_coef(Y_val_batch, Y_val_binary)
@@ -1056,7 +1088,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                     X_vis_device = X_vis.to(device)
                 else:
                     X_vis_device = X_vis
-                Y_prob = torch.sigmoid(model(X_vis_device)).detach().cpu()
+                Y_prob = predict_prob_with_tta(model, X_vis_device, val_tta).detach().cpu()
                 Y_pred = (Y_prob >= 0.5).float()
                 for idx in range(X_vis.size(0)):
                     panels.append(_prediction_panel(X_vis[idx], Y_vis[idx], Y_pred[idx], Y_prob[idx]))

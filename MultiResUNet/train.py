@@ -1,16 +1,8 @@
 import os
 import numpy as np
-import cv2
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from keras.models import Model
-from keras.optimizers import Adam
-from sklearn.model_selection import train_test_split
-from keras import backend as K
 import torch
 import argparse
 import gc
-from datetime import datetime
 import random
 
 # Import the MultiResUNet model and utility functions
@@ -20,6 +12,44 @@ from dataloading import load_data, split_data, create_datasets
 # Define paths for data
 IMAGE_DIR = 'data/imgs/'
 MASK_DIR = 'data/masks/'
+
+
+def create_model(args):
+    """Create the requested segmentation model.
+
+    The default keeps the existing MultiResUNet path unchanged. The SMP path is
+    optional so existing training does not require extra dependencies.
+    """
+    if args.model_architecture == 'multiresunet':
+        model = MultiResUnet(
+            input_channels=args.input_channels,
+            num_classes=args.output_channels,
+            dropout_rate=args.dropout_rate
+        )
+        model_name = 'MultiResUNet'
+    elif args.model_architecture == 'smp_unet':
+        try:
+            import segmentation_models_pytorch as smp
+        except ImportError:
+            raise ImportError(
+                "segmentation_models_pytorch is required for --model-architecture smp_unet. "
+                "Install it on the server with: pip install segmentation-models-pytorch"
+            )
+        encoder_weights = args.encoder_weights
+        if encoder_weights is not None and encoder_weights.lower() in ('none', 'null', 'false'):
+            encoder_weights = None
+        model = smp.Unet(
+            encoder_name=args.encoder_name,
+            encoder_weights=encoder_weights,
+            in_channels=args.input_channels,
+            classes=args.output_channels,
+            activation=None
+        )
+        model_name = f"SMP-Unet({args.encoder_name}, weights={encoder_weights})"
+    else:
+        raise ValueError(f"Unsupported model architecture: {args.model_architecture}")
+
+    return model, model_name
 
 
 def check_memory_usage():
@@ -196,6 +226,13 @@ def parse_args():
                         help='Number of input image channels (default: 3)')
     parser.add_argument('--output-channels', type=int, default=4,
                         help='Number of output segmentation channels (default: 4)')
+    parser.add_argument('--model-architecture', type=str, default='multiresunet',
+                        choices=['multiresunet', 'smp_unet'],
+                        help='Model architecture: existing multiresunet or optional segmentation_models_pytorch Unet')
+    parser.add_argument('--encoder-name', type=str, default='resnet34',
+                        help='SMP encoder name when --model-architecture smp_unet (default: resnet34)')
+    parser.add_argument('--encoder-weights', type=str, default='imagenet',
+                        help='SMP encoder weights, e.g. imagenet or None. Only used by smp_unet (default: imagenet)')
     
     # Training hyperparameters
     parser.add_argument('--epochs', type=int, default=50,
@@ -267,6 +304,9 @@ def parse_args():
                         help='Epoch interval for TensorBoard validation prediction images. Set 0 to disable (default: 5)')
     parser.add_argument('--tb-num-images', type=int, default=4,
                         help='Number of validation samples to show in TensorBoard image panels (default: 4)')
+    parser.add_argument('--val-tta', type=str, default='none',
+                        choices=['none', 'flips'],
+                        help='Validation-time test-time augmentation. "flips" averages original/h/v/hv flips (default: none)')
     
     # Debugging options
     parser.add_argument('--debug', action='store_true',
@@ -289,6 +329,12 @@ def parse_args():
                         help='Weight for Dice loss in combined loss (default: 0.5)')
     parser.add_argument('--class-weights', type=float, nargs='+', default=None,
                         help='Optional per-output-channel loss weights, e.g. --class-weights 1 1 2 1')
+    parser.add_argument('--oversample-class-indices', type=int, nargs='+', default=None,
+                        help='Optional mask channel indices to oversample in the training split, e.g. --oversample-class-indices 2')
+    parser.add_argument('--oversample-factor', type=float, default=1.0,
+                        help='Effective repeat factor for samples containing oversample classes. 1.0 disables it (default: 1.0)')
+    parser.add_argument('--oversample-min-pixels', type=int, default=1,
+                        help='Minimum positive pixels in a selected class channel to oversample a sample (default: 1)')
     
     # Regularization parameters
     parser.add_argument('--dropout-rate', type=float, default=0.2,
@@ -341,6 +387,9 @@ def main():
         print(f"Scale Factor: {args.scale_factor} ({args.scale_factor*100:.0f}%)")
     print(f"Input Channels: {args.input_channels}")
     print(f"Output Channels: {args.output_channels}")
+    print(f"Model Architecture: {args.model_architecture}")
+    if args.model_architecture == 'smp_unet':
+        print(f"Encoder: {args.encoder_name}, weights={args.encoder_weights}")
     print(f"Epochs: {args.epochs}")
     print(f"Batch Size: {args.batch_size}")
     print(f"Learning Rate: {args.learning_rate}")
@@ -357,6 +406,8 @@ def main():
     print(f"Num Workers: {args.num_workers}")
     print(f"Prefetch Factor: {args.prefetch_factor}")
     print(f"Repeat Factor: {args.repeat_factor}")
+    print(f"Oversample Classes: {args.oversample_class_indices if args.oversample_class_indices else 'None'}")
+    print(f"Oversample Factor: {args.oversample_factor}")
     print(f"Train Augmentation: {args.train_augmentation}")
     print(f"Validation Augmentation: {args.val_augmentation}")
     print(f"Augmentation Strength: {args.augmentation_strength}")
@@ -372,6 +423,8 @@ def main():
     print(f"Early Stopping Min Delta: {args.early_stopping_min_delta}")
     print(f"Early Stopping Min Epochs: {args.early_stopping_min_epochs}")
     print(f"Class Weights: {args.class_weights if args.class_weights is not None else 'None'}")
+    print(f"Dropout Rate: {args.dropout_rate}")
+    print(f"Validation TTA: {args.val_tta}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
 
@@ -482,6 +535,9 @@ def main():
             augmentation_strength=args.augmentation_strength,
             strong_aug_strength=args.curriculum_target_strength,
             augmentation_schedule_level=0.0,
+            oversample_class_indices=args.oversample_class_indices,
+            oversample_factor=args.oversample_factor,
+            oversample_min_pixels=args.oversample_min_pixels,
             shuffle=True,
             seed=args.seed
         )
@@ -539,12 +595,10 @@ def main():
         
         # Initialize model BEFORE training
         print(f"\nInitializing model...")
-        model = MultiResUnet(
-            input_channels=args.input_channels, 
-            num_classes=args.output_channels
-        ).to(device)
+        model, model_name = create_model(args)
+        model = model.to(device)
         
-        print(f"Model architecture: MultiResUNet")
+        print(f"Model architecture: {model_name}")
         print(f"  Input: {args.input_channels} channels")
         print(f"  Output: {args.output_channels} channels")
         
@@ -574,6 +628,9 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            model_architecture=args.model_architecture,
+            encoder_name=args.encoder_name,
+            encoder_weights=args.encoder_weights,
             train_augmentation=args.train_augmentation,
             val_augmentation=args.val_augmentation,
             repeat_factor=args.repeat_factor,
@@ -593,6 +650,7 @@ def main():
             curriculum_min_level_epochs=args.curriculum_min_level_epochs,
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
+            val_tta=args.val_tta,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -637,13 +695,10 @@ def main():
 
         # Define the model
         print(f"\nInitializing model...")
-        model = MultiResUnet(
-            input_channels=args.input_channels, 
-            num_classes=args.output_channels,
-            dropout_rate=args.dropout_rate
-        ).to(device)
+        model, model_name = create_model(args)
+        model = model.to(device)
         
-        print(f"Model architecture: MultiResUNet")
+        print(f"Model architecture: {model_name}")
         print(f"  Input: {args.input_channels} channels")
         print(f"  Output: {args.output_channels} channels")
         print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
@@ -681,6 +736,9 @@ def main():
             validation_split=args.validation_split,
             input_channels=args.input_channels,
             output_channels=args.output_channels,
+            model_architecture=args.model_architecture,
+            encoder_name=args.encoder_name,
+            encoder_weights=args.encoder_weights,
             train_augmentation=False,
             val_augmentation=False,
             repeat_factor=1,
@@ -700,6 +758,7 @@ def main():
             curriculum_min_level_epochs=args.curriculum_min_level_epochs,
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
+            val_tta=args.val_tta,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,

@@ -1,22 +1,31 @@
 # MultiResUNet Training Experiment Log
 
-本文档总结截至 2026-06-01 的 MultiResUNet 训练思路、每轮实验动机、结果观察，以及后续训练路径。
+本文档总结截至 2026-06-08 的 MultiResUNet 训练思路、每轮实验动机、结果观察，以及后续训练路径。
 
 ## 当前最佳结果
 
 当前最优实验为：
 
 ```text
-C_l04_ramp35_scale075
+C_scale075_l04_cls2w15
 scale-factor: 0.75
 loss: combined loss, BCE:Dice = 0.7:0.3
 augmentation: mild -> moderate, cosine curriculum
 max augmentation level: 0.4
 ramp: start E40, ramp 35 epochs
-best val_dice: 0.68139 @ E67
-best val_jaccard: 0.56197
-tail10 val_dice: 0.67132 ± 0.00419
+class weights: [1, 1, 1.5, 1]
+best val_dice: 0.68358 @ E67
+best val_jaccard: 0.56341
+per-class Dice @best: class0=0.7444, class1=0.7152, class2=0.4729, class3=0.7784
 ```
+
+相比前一代最佳：
+
+```text
+C_l04_ramp35_scale075 best val_dice = 0.68139
+```
+
+当前提升约 `+0.00219` Dice。提升幅度不大，但 class 2 从约 `0.4259` 提升到 `0.4729`，说明 class 2 权重方向有效；代价是 class0/class1 有一定下降。
 
 相比早期最佳：
 
@@ -24,7 +33,7 @@ tail10 val_dice: 0.67132 ± 0.00419
 B_combined_mild_aug_150 best val_dice = 0.66530
 ```
 
-当前提升约 `+0.0161` Dice，主要来自更高输入分辨率 `scale-factor=0.75`。
+当前累计提升约 `+0.0183` Dice，主要来自 `scale-factor=0.75`，其次来自 class 2 定向加权。
 
 ## 阶段 1：基础 A/B 测试
 
@@ -133,7 +142,7 @@ level@best ≈ 0.36
 1. 完整 moderate 太强，会压低验证上限。
 2. 最佳点出现在 level 约 `0.35-0.4`。
 3. 后续继续升到 `0.6` 后没有继续提升。
-4. 说明增强强度有效区间不是越强越好，而是存在最佳中间强度。
+4. 说明增强强度不是越强越好，而是存在最佳中间强度。
 
 ### 引出的下一步
 
@@ -212,10 +221,10 @@ C_l04_ramp35_scale075
 
 ```text
 best val_dice = 0.68139 @ E67
+best val_jaccard = 0.56197
 tail10 = 0.67132 ± 0.00419
+per-class Dice @best = 0.7685 / 0.7298 / 0.4259 / 0.7670
 ```
-
-这是目前最优结果，且尾段稳定。
 
 ### 思考路径
 
@@ -309,55 +318,81 @@ Combined Loss
 
 默认不传时保持旧行为。
 
-## 当前待跑实验设计
+## 阶段 8：class-weighted loss 结果
 
-已经写入 `temp.sh` 的 8 条方向：
+### 实验结果
 
 ```text
-1. C_scale075_l04_cls2w15
-2. C_scale075_l04_cls2w20
-3. C_scale075_l04_cls2w15_dice04
-4. C_scale075_l035_cls2w15
-5. C_scale075_l04_ramp50_cls2w15
-6. C_scale075_l04_cls2w15_lr15e5
-7. C_scale100_mild_lr15e5
-8. C_scale100_l02_ramp45_cls2w15_lr15e5
+C_scale075_l04_cls2w15              best val_dice = 0.68358 @ E67
+C_scale075_l035_cls2w15             best val_dice = 0.68147 @ E67
+C_scale075_l04_cls2w15_dice04       best val_dice = 0.68017 @ E67
+C_scale075_l04_ramp50_cls2w15       best val_dice = 0.67671 @ E68
+C_scale075_l04_cls2w20              best val_dice = 0.65974 @ E67
+C_scale075_l04_cls2w15_lr15e5       best val_dice = 0.65129 @ E61
+C_scale100_mild_lr15e5              best val_dice = 0.64465 @ E57
+C_scale100_l02_ramp45_cls2w15_lr15e5 best val_dice = 0.64090 @ E57
+```
+
+### 关键观察
+
+1. `class2 weight = 1.5` 是唯一明确正收益，整体 Dice 从 `0.68139` 到 `0.68358`。
+2. class 2 Dice 从约 `0.4259` 提升到 `0.4729`，说明权重确实让模型更关注 class 2。
+3. `class2 weight = 2.0` 明显过强，整体 Dice 掉到 `0.65974`。
+4. `dice_weight = 0.4` 能继续推高 class 2 到约 `0.4934`，但整体 Dice 降到 `0.68017`，说明只加 Dice 比例会牺牲其他类。
+5. `max_level=0.35` 与 `0.4` 基本接近，但没有超过 `0.4`。
+6. `ramp_epochs=50` 变差，说明增强推进变慢不是当前瓶颈。
+7. `learning_rate=1.5e-5` 明显变差，说明当前模型需要至少 `2e-5` 的学习率。
+8. `scale1.0` 再次失败，当前架构和训练策略下不应继续大规模投入 full resolution。
+
+### 思考路径
+
+class 2 加权方向有效，但收益边际很小，并且会挤压 class0/class1。下一步不应继续粗暴提高 class 2 权重，而应在 `1.25-1.6` 附近细扫，同时尝试轻微补偿 class0/class1，避免 class2 提升换来其他类下降。
+
+## 当前待跑实验设计
+
+已经写入 `temp.sh` 的 6 条聚焦方向：
+
+```text
+1. C_scale075_l04_cls2w125
+2. C_scale075_l04_cls2w135
+3. C_scale075_l04_cls2w16
+4. C_scale075_l04_cls011_cls2w15
+5. C_scale075_l04_cls2w15_dice035
+6. C_scale075_l04_cls2w15_lr25e5
 ```
 
 ### 每条实验的目的
 
-1. `cls2w15`  
-   测试轻度 class 2 权重是否提升 class 2，同时不伤害其他类。
+1. `cls2w125`  
+   判断 `class2 weight=1.5` 是否已经过强，测试更温和的 `1.25`。
 
-2. `cls2w20`  
-   测试更强 class 2 权重是否有更大收益，风险是其他类别下降。
+2. `cls2w135`  
+   扫描 `1.25` 与当前最佳 `1.5` 之间的中间点。
 
-3. `cls2w15_dice04`  
-   增加 Dice Loss 占比，看是否提升分割重叠质量，尤其是 class 2。
+3. `cls2w16`  
+   轻微高于当前最佳 `1.5`，但避开已验证失败的 `2.0`。
 
-4. `l035_cls2w15`  
-   降低增强上限，判断 class 2 权重是否需要更温和的增强环境。
+4. `cls011_cls2w15`  
+   在保持 class2=1.5 的同时补偿 class0/class1，检查能否保住 class2 提升并减少其他类损失。
 
-5. `ramp50_cls2w15`  
-   放慢增强速度，给 class 2 更多适应时间。
+5. `cls2w15_dice035`  
+   测试 `dice_weight=0.35`，位于已知较稳的 `0.3` 和较弱的 `0.4` 之间。
 
-6. `lr15e5`  
-   降低学习率，看后期稳定性和 tail 是否改善。
-
-7. `scale100_mild_lr15e5`  
-   保守重试 full resolution，不加课程增强，判断 scale1.0 是否本身可用。
-
-8. `scale100_l02_ramp45_cls2w15_lr15e5`  
-   full resolution + 极轻课程增强，测试更高分辨率是否需要更弱增强。
+6. `cls2w15_lr25e5`  
+   轻微提高学习率到 `2.5e-5`。如果有效，下一轮再考虑 `3e-5`。
 
 ## 当前不建议继续投入的方向
 
 ```text
 1. scale0.5 下继续调增强强度
 2. batch-size 24 或更大
-3. scale1.0 + level0.4 这类强课程增强
+3. scale1.0 + 当前课程增强路线
 4. 原始严格 adaptive 参数
 5. focal loss 单独路线
+6. 继续增加 ramp_epochs，例如 ramp50
+7. 继续提高 dice_weight 到 0.4 或更高
+8. class2 weight 直接拉到 2.0
+9. learning rate 降到 1.5e-5
 ```
 
 ## 当前推荐判断标准
@@ -370,7 +405,7 @@ Combined Loss
 3. tail10 mean/std
 4. train-val gap
 5. class2 val_dice 是否提升
-6. 其他 class 是否明显掉
+6. class0/class1/class3 是否明显下降
 ```
 
 如果 class2 提升但整体 Dice 不升，需要检查是否牺牲了 class0/1/3。
@@ -379,17 +414,27 @@ Combined Loss
 
 ## 目前最合理的下一步
 
-优先跑并分析：
+优先跑并分析 `temp.sh` 中的 6 条聚焦实验：
 
 ```text
-C_scale075_l04_cls2w15
-C_scale075_l04_cls2w20
-C_scale075_l04_cls2w15_dice04
+C_scale075_l04_cls2w125
+C_scale075_l04_cls2w135
+C_scale075_l04_cls2w16
+C_scale075_l04_cls011_cls2w15
+C_scale075_l04_cls2w15_dice035
+C_scale075_l04_cls2w15_lr25e5
 ```
 
-如果这三组中 class2 明显提升，下一轮围绕 class weights 继续微调。
+如果其中有实验超过 `0.684`，继续围绕该方向做小范围复验和 seed 稳定性测试。
 
-如果 class2 没提升，说明 class2 可能不是 loss 权重问题，而是数据标注、目标形态、分辨率或类别定义问题，需要回到样本级预测图检查。
+如果全部停在 `0.681-0.684`，说明当前调参路线接近平台。下一步应转向：
+
+```text
+1. 样本级预测图检查 class2 错误来源
+2. class2 oversampling 或 patch 采样策略
+3. 预训练 encoder / 更强 backbone
+4. boundary loss 或边界辅助监督
+```
 
 ## 实验引出关系图
 
@@ -482,33 +527,78 @@ MultiResUNet Training
 ├── 04_class_bottleneck
 │   ├── per_class_analysis
 │   │   ├── 来源: TensorBoard/logging 增加 per-class Dice
-│   │   ├── 观察: class2 Dice≈0.42, 其他类约0.72-0.77
+│   │   ├── 观察: class2 Dice≈0.426, 其他类约0.72-0.77
 │   │   └── 结论: class2 是当前主要瓶颈
 │   │
 │   └── class_weighted_loss
 │       ├── 代码改动: 增加 --class-weights
 │       ├── 作用范围: BCE / Focal / Dice / Combined Loss
-│       └── 引出下一批实验:
-│           ├── C_scale075_l04_cls2w15
-│           ├── C_scale075_l04_cls2w20
-│           ├── C_scale075_l04_cls2w15_dice04
-│           ├── C_scale075_l035_cls2w15
-│           ├── C_scale075_l04_ramp50_cls2w15
-│           ├── C_scale075_l04_cls2w15_lr15e5
-│           ├── C_scale100_mild_lr15e5
-│           └── C_scale100_l02_ramp45_cls2w15_lr15e5
+│       ├── C_scale075_l04_cls2w15
+│       │   ├── 结果: best val_dice = 0.68358
+│       │   ├── class2: 0.4259 -> 0.4729
+│       │   └── 观察: 当前最佳, 但 class0/class1 有下降
+│       ├── C_scale075_l04_cls2w20
+│       │   ├── 结果: best val_dice = 0.65974
+│       │   └── 观察: class2 权重过强, 明显反噬
+│       ├── C_scale075_l04_cls2w15_dice04
+│       │   ├── 结果: best val_dice = 0.68017
+│       │   └── 观察: class2 更高但整体变差, dice_weight=0.4 不作为主线
+│       ├── C_scale075_l035_cls2w15
+│       │   ├── 结果: best val_dice = 0.68147
+│       │   └── 观察: level0.35 与 0.4 接近, 但没超过当前最佳
+│       ├── C_scale075_l04_ramp50_cls2w15
+│       │   ├── 结果: best val_dice = 0.67671
+│       │   └── 观察: ramp 变慢无益
+│       ├── C_scale075_l04_cls2w15_lr15e5
+│       │   ├── 结果: best val_dice = 0.65129
+│       │   └── 观察: lr 降低明显有害
+│       └── scale100_retry
+│           ├── C_scale100_mild_lr15e5: best≈0.64465
+│           ├── C_scale100_l02_ramp45_cls2w15_lr15e5: best≈0.64090
+│           └── 结论: 当前不继续投入 scale1.0
 │
 └── current_decision_point
-    ├── 当前最佳: C_l04_ramp35_scale075, val_dice = 0.68139
-    ├── 当前主线: scale0.75 + fixed cosine curriculum
-    ├── 当前瓶颈: class2
+    ├── 当前最佳: C_scale075_l04_cls2w15, val_dice = 0.68358
+    ├── 当前主线: scale0.75 + fixed cosine curriculum + class2 weight 细调
+    ├── 当前瓶颈: class2 提升会牺牲 class0/class1, 需要找权重平衡点
     ├── 暂停方向:
     │   ├── scale0.5 增强微调
     │   ├── batch24
     │   ├── 原始 strict adaptive
-    │   └── scale1.0 + 强课程增强
+    │   ├── scale1.0 + 当前训练策略
+    │   ├── class2 weight=2.0
+    │   ├── dice_weight=0.4
+    │   └── lr=1.5e-5
     └── 下一步:
-        ├── 优先分析 class2 weighted loss
-        ├── 若 class2 提升且整体不掉, 继续微调 class weights
-        └── 若 class2 不提升, 回到样本级预测图检查数据/标注/类别定义
+        ├── 运行 6 条 class-weight / loss / lr 聚焦实验
+        ├── 若突破 0.684, 做 seed 复验
+        ├── 若仍平台, 做 class2 样本级错误分析
+        └── 后续考虑 class2 oversampling、预训练 encoder、boundary loss
 ```
+
+## 最新 temp.sh 训练命令摘要
+
+完整命令已写入 `temp.sh`。当前这批实验应从服务器的 `MultiResUNet` 目录运行：
+
+```bash
+cd ~/zjm/ORO1/ORO/MultiResUNet
+bash ../temp.sh
+```
+
+这批命令的共同基线为：
+
+```text
+scale-factor = 0.75
+batch-size = 16
+learning-rate = 2e-5
+loss = combined loss, BCE:Dice = 0.7:0.3
+augmentation = mild -> moderate
+curriculum = cosine
+start epoch = 40
+ramp epochs = 35
+max aug level = 0.4
+early-stopping-min-epochs = 90
+early-stopping-patience = 25
+```
+
+唯一变量分别是 class2 权重、class0/class1 补偿、Dice 比例和学习率。

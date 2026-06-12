@@ -2,12 +2,9 @@ import os
 import random
 import cv2
 import numpy as np
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset
-import torchvision.transforms as transforms
-from typing import Optional
 
 
 class SegmentationDataset(Dataset):
@@ -450,7 +447,9 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    repeat_factor=1, train_apply_augmentation=True, val_apply_augmentation=False,
                    shuffle=True, seed=42, augmentation_strength='mild',
                    strong_aug_prob=0.0, strong_aug_strength='strong',
-                   augmentation_schedule_level=0.0):
+                   augmentation_schedule_level=0.0,
+                   oversample_class_indices=None, oversample_factor=1.0,
+                   oversample_min_pixels=1):
     """Create training and validation datasets without loading all data into memory.
     
     This function creates dataset objects that will load data on-demand,
@@ -475,6 +474,9 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         strong_aug_prob (float): Probability of sampling strong_aug_strength for training samples
         strong_aug_strength (str): Strong-side profile used for augmentation mixing
         augmentation_schedule_level (float): Interpolation level from augmentation_strength to strong_aug_strength
+        oversample_class_indices (list[int]): Mask channels that trigger training oversampling
+        oversample_factor (float): Effective repeat factor for matching training files. 1.0 disables oversampling
+        oversample_min_pixels (int): Minimum positive pixels in any selected class channel to count as a match
     
     Returns:
         tuple: (train_dataset, val_dataset, n_train, n_val)
@@ -514,12 +516,28 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
     train_mask_files = mask_files[:n_train]
     val_img_files = img_files[n_train:]
     val_mask_files = mask_files[n_train:]
+    original_n_train = len(train_img_files)
+
+    if oversample_class_indices and oversample_factor and oversample_factor > 1.0:
+        train_img_files, train_mask_files, matched = oversample_training_files_by_mask_class(
+            train_img_files,
+            train_mask_files,
+            mask_dir=mask_dir,
+            class_indices=oversample_class_indices,
+            factor=oversample_factor,
+            min_pixels=oversample_min_pixels,
+            seed=seed
+        )
+        print(f"Class oversampling: classes={oversample_class_indices}, factor={oversample_factor}, "
+              f"matched={matched}, training samples after oversampling={len(train_img_files)}")
     
     print(f"Total samples: {n_total}")
     print(f"Training samples: {n_train}")
     print(f"Validation samples: {n_val}")
     if scale:
         print(f"  Scale factor: {scale_factor*100:.0f}%")
+    if len(train_img_files) != original_n_train:
+        print(f"Effective training samples: {len(train_img_files)}")
     
     # Create datasets (these won't load data until accessed)
     train_dataset = SegmentationDataset(
@@ -560,11 +578,75 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         augmentation_schedule_level=0.0
     )
     
-    return train_dataset, val_dataset, n_train, n_val
+    return train_dataset, val_dataset, len(train_img_files), n_val
+
+
+def oversample_training_files_by_mask_class(img_files, mask_files, mask_dir,
+                                            class_indices, factor=1.0,
+                                            min_pixels=1, seed=42):
+    """Duplicate training file pairs whose mask contains selected class channels.
+
+    The validation split is untouched. Fractional factors are deterministic for a
+    given seed, e.g. factor=1.5 duplicates all matching samples once for half of
+    the matching set.
+    """
+    if factor <= 1.0:
+        return img_files, mask_files, 0
+
+    class_indices = [int(idx) for idx in class_indices]
+    min_pixels = max(1, int(min_pixels))
+    matched_pairs = []
+
+    for img_file, mask_file in zip(img_files, mask_files):
+        mask_path = os.path.join(mask_dir, mask_file)
+        try:
+            mask = np.load(mask_path)['mask']
+        except Exception as e:
+            print(f"WARNING: Failed to read mask for oversampling '{mask_path}': {e}")
+            continue
+
+        if mask.ndim < 3:
+            continue
+
+        channel_hits = []
+        for class_idx in class_indices:
+            if 0 <= class_idx < mask.shape[2]:
+                channel_hits.append(np.count_nonzero(mask[:, :, class_idx]) >= min_pixels)
+        if any(channel_hits):
+            matched_pairs.append((img_file, mask_file))
+
+    if not matched_pairs:
+        return img_files, mask_files, 0
+
+    rng = random.Random(seed)
+    duplicate_pairs = []
+    whole_repeats = int(factor) - 1
+    fractional_repeat = factor - int(factor)
+
+    for _ in range(max(0, whole_repeats)):
+        duplicate_pairs.extend(matched_pairs)
+
+    if fractional_repeat > 0:
+        partial_count = int(round(len(matched_pairs) * fractional_repeat))
+        shuffled = matched_pairs[:]
+        rng.shuffle(shuffled)
+        duplicate_pairs.extend(shuffled[:partial_count])
+
+    combined_pairs = list(zip(img_files, mask_files)) + duplicate_pairs
+    rng.shuffle(combined_pairs)
+    out_img_files, out_mask_files = zip(*combined_pairs)
+    return list(out_img_files), list(out_mask_files), len(matched_pairs)
 
 
 def split_data(X, Y, validation=0.1, random_state=42):
-    X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=validation, random_state=random_state)
+    rng = np.random.RandomState(random_state)
+    indices = np.arange(len(X))
+    rng.shuffle(indices)
+    n_val = int(round(len(indices) * validation))
+    val_indices = indices[:n_val]
+    train_indices = indices[n_val:]
+    X_train, X_val = X[train_indices], X[val_indices]
+    Y_train, Y_val = Y[train_indices], Y[val_indices]
     print(f"Train set: {X_train.shape}")
     print(f"Validation set: {X_val.shape}")
     return X_train, X_val, Y_train, Y_val
