@@ -4,6 +4,10 @@ import torch
 import argparse
 import gc
 import random
+import sys
+import atexit
+from pathlib import Path
+from datetime import datetime
 
 # Import the MultiResUNet model and utility functions
 from pytorch.MultiResUNet import MultiResUnet, dice_coef, jacard, saveModel, evaluateModel, trainStep
@@ -12,6 +16,85 @@ from dataloading import load_data, split_data, create_datasets
 # Define paths for data
 IMAGE_DIR = 'data/imgs/'
 MASK_DIR = 'data/masks/'
+
+
+class TeeStream:
+    """Mirror stdout/stderr to a run log while preserving normal console output."""
+
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+        self.encoding = getattr(stream, 'encoding', 'utf-8')
+
+    def write(self, data):
+        self.stream.write(data)
+        self.log_file.write(data)
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+
+def _experiment_name_from_args(args):
+    for candidate in (args.save_dir, args.log_dir):
+        if candidate:
+            name = Path(candidate).name
+            if name and name not in ('models', 'logs', 'tensorboard'):
+                return name
+    return f"train_e{args.epochs}_bs{args.batch_size}_lr{args.learning_rate}"
+
+
+def setup_run_outputs(args):
+    """
+    Keep all artifacts from one invocation under a single timestamped run directory.
+
+    This intentionally overrides the old split layout where --save-dir and --log-dir
+    could point at unrelated folders. Existing command lines still work because their
+    experiment name is reused to name the run directory.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_name = _experiment_name_from_args(args)
+    run_dir = Path('runs') / f"{experiment_name}_{timestamp}"
+    model_dir = run_dir / 'models'
+    tensorboard_dir = run_dir / 'tensorboard'
+    log_dir = run_dir / 'logs'
+    history_dir = run_dir / 'history'
+
+    for directory in (model_dir, log_dir, history_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    if args.tensorboard:
+        tensorboard_dir.mkdir(parents=True, exist_ok=True)
+
+    original_save_dir = args.save_dir
+    original_log_dir = args.log_dir
+    args.run_dir = str(run_dir)
+    args.save_dir = str(model_dir)
+    args.metadata_dir = str(history_dir)
+    if args.tensorboard:
+        args.log_dir = str(tensorboard_dir)
+
+    stdout_log = open(log_dir / 'training.log', 'a', encoding='utf-8', buffering=1)
+    stderr_log = open(log_dir / 'training.err', 'a', encoding='utf-8', buffering=1)
+    sys.stdout = TeeStream(sys.stdout, stdout_log)
+    sys.stderr = TeeStream(sys.stderr, stderr_log)
+    atexit.register(stdout_log.close)
+    atexit.register(stderr_log.close)
+
+    print("=" * 60)
+    print("Run output layout")
+    print("=" * 60)
+    print(f"Run Directory: {args.run_dir}")
+    print(f"Original Save Directory: {original_save_dir}")
+    print(f"Model Directory: {args.save_dir}")
+    print(f"Original TensorBoard Directory: {original_log_dir}")
+    print(f"TensorBoard Directory: {args.log_dir if args.tensorboard else 'disabled'}")
+    print(f"Python Log File: {log_dir / 'training.log'}")
+    print(f"Python Error Log File: {log_dir / 'training.err'}")
+    print(f"History Directory: {args.metadata_dir}")
+    print("=" * 60)
 
 
 def create_model(args):
@@ -296,6 +379,8 @@ def parse_args():
                         help='Save model checkpoints during training')
     parser.add_argument('--save-dir', type=str, default='models',
                         help='Directory to save model checkpoints (default: models)')
+    parser.add_argument('--checkpoint-interval', type=int, default=10,
+                        help='Save epoch checkpoints every N epochs. Set 0 to disable periodic checkpoints (default: 10)')
     parser.add_argument('--tensorboard', action='store_true',
                         help='Enable TensorBoard logging')
     parser.add_argument('--log-dir', type=str, default='runs/logs',
@@ -350,6 +435,8 @@ def parse_args():
                         help='Multiplicative factor for StepLR/ExponentialLR schedulers (default: 0.1)')
     parser.add_argument('--lr-patience', type=int, default=10,
                         help='Patience for ReduceLROnPlateau scheduler (default: 10)')
+    parser.add_argument('--lr-cosine-t-max', type=int, default=None,
+                        help='T_max for CosineAnnealingLR. Defaults to --epochs. Use this to extend training without changing the LR curve.')
     parser.add_argument('--early-stopping-patience', type=int, default=15,
                         help='Stop after this many epochs without val Dice improvement. Set 0 to disable (default: 15)')
     parser.add_argument('--early-stopping-min-delta', type=float, default=0.0,
@@ -371,6 +458,7 @@ def parse_args():
 def main():
     # Parse command line arguments
     args = parse_args()
+    setup_run_outputs(args)
     if args.class_weights is not None and len(args.class_weights) != args.output_channels:
         raise ValueError(
             f"--class-weights expects {args.output_channels} values, got {len(args.class_weights)}"
@@ -403,6 +491,9 @@ def main():
         print(f"Log Directory: {args.log_dir}")
         print(f"TensorBoard Image Interval: {args.tb_image_interval}")
         print(f"TensorBoard Image Samples: {args.tb_num_images}")
+    print(f"Run Directory: {args.run_dir}")
+    print(f"Model Directory: {args.save_dir}")
+    print(f"History Directory: {args.metadata_dir}")
     print(f"Num Workers: {args.num_workers}")
     print(f"Prefetch Factor: {args.prefetch_factor}")
     print(f"Repeat Factor: {args.repeat_factor}")
@@ -485,17 +576,7 @@ def main():
 
     # Setup TensorBoard logging if enabled
     if args.tensorboard:
-        # If log_dir is still the default 'runs/logs', create a unique subdirectory with timestamp
-        if args.log_dir == 'runs/logs':
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # Create a descriptive log directory name similar to run_training.sh
-            log_dir = f"runs/tensorboard/train_{timestamp}_e{args.epochs}_bs{args.batch_size}_lr{args.learning_rate}"
-            if args.scale:
-                log_dir += f"_scale{args.scale_factor}"
-        else:
-            log_dir = args.log_dir
-        
+        log_dir = args.log_dir
         os.makedirs(log_dir, exist_ok=True)
         print(f"\nTensorBoard logs will be saved to: {log_dir}")
     else:
@@ -620,8 +701,10 @@ def main():
             prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
+            checkpoint_interval=args.checkpoint_interval,
             verbose=args.verbose,
             log_dir=log_dir,  # Pass TensorBoard log directory
+            metadata_dir=args.metadata_dir,
             scale=args.scale,
             scale_factor=args.scale_factor,
             data_limit=args.data_limit,
@@ -663,7 +746,8 @@ def main():
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,
             lr_gamma=args.lr_gamma,
-            lr_patience=args.lr_patience
+            lr_patience=args.lr_patience,
+            lr_cosine_t_max=args.lr_cosine_t_max
         )
     
     else:
@@ -728,8 +812,10 @@ def main():
             prefetch_factor=args.prefetch_factor,
             save_model=args.save_model,
             save_dir=args.save_dir,
+            checkpoint_interval=args.checkpoint_interval,
             verbose=args.verbose,
             log_dir=log_dir,  # Pass TensorBoard log directory
+            metadata_dir=args.metadata_dir,
             scale=args.scale,
             scale_factor=args.scale_factor,
             data_limit=args.data_limit,
@@ -771,7 +857,8 @@ def main():
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,
             lr_gamma=args.lr_gamma,
-            lr_patience=args.lr_patience
+            lr_patience=args.lr_patience,
+            lr_cosine_t_max=args.lr_cosine_t_max
         )
     
     print("-" * 60)

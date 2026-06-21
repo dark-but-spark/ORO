@@ -633,7 +633,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               train_loader=None, val_loader=None, epochs=50, batch_size=2, device='cuda', 
               learning_rate=1e-4, gradient_clip=1.0, weight_decay=0,
               num_workers=4, prefetch_factor=2,
-              save_model=False, save_dir='models', verbose=False, log_dir=None,
+              save_model=False, save_dir='models', checkpoint_interval=10,
+              verbose=False, log_dir=None, metadata_dir=None,
               # additional run config for logging
               scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
               input_channels=3, output_channels=4,
@@ -644,7 +645,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
               class_weights=None,
               # learning rate scheduler configuration
-              lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1, lr_patience=10,
+              lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1,
+              lr_patience=10, lr_cosine_t_max=None,
               # early stopping configuration
               early_stopping_patience=15, early_stopping_min_delta=0.0,
               early_stopping_min_epochs=0,
@@ -819,7 +821,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     # Learning rate scheduler - Support multiple types for different scenarios
     if lr_scheduler_type == 'cosine':
         # Cosine annealing - good for stable convergence on sparse data
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+        cosine_t_max = int(lr_cosine_t_max) if lr_cosine_t_max is not None else epochs
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cosine_t_max, eta_min=learning_rate * 0.01
+        )
     elif lr_scheduler_type == 'step':
         # Step decay - simple and effective, reduces LR by factor every N epochs
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=lr_step_size, gamma=lr_gamma)
@@ -833,7 +838,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         )
     else:
         # Default to cosine annealing
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate * 0.01)
+        cosine_t_max = int(lr_cosine_t_max) if lr_cosine_t_max is not None else epochs
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cosine_t_max, eta_min=learning_rate * 0.01
+        )
 
     param_count = sum(p.numel() for p in model.parameters())
     trainable_param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -848,6 +856,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'lr_step_size': lr_step_size,
         'lr_gamma': lr_gamma,
         'lr_patience': lr_patience,
+        'lr_cosine_t_max': lr_cosine_t_max if lr_cosine_t_max is not None else -1,
         'early_stopping_patience': early_stopping_patience,
         'early_stopping_min_delta': early_stopping_min_delta,
         'early_stopping_min_epochs': early_stopping_min_epochs,
@@ -868,6 +877,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'prefetch_factor': prefetch_factor,
         'save_model': save_model,
         'save_dir': save_dir,
+        'checkpoint_interval': checkpoint_interval,
         'scale': bool(scale),
         'scale_factor': scale_factor,
         'data_limit': data_limit if data_limit is not None else -1,
@@ -897,7 +907,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'run_start_time': run_start_time,
     }
 
-    history_save_dir = log_dir if log_dir is not None else 'runs/history'
+    history_save_dir = metadata_dir if metadata_dir is not None else (log_dir if log_dir is not None else 'runs/history')
     os.makedirs(history_save_dir, exist_ok=True)
     config_path = os.path.join(history_save_dir, 'config.json')
     try:
@@ -1249,7 +1259,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                     print(f"⚠ WARNING: Failed to write to TensorBoard: {e}")
 
         # Save model checkpoint
-        if save_model and (epoch + 1) % 10 == 0:  # Save every 10 epochs
+        if save_model and checkpoint_interval and checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
             saveModel(model, model_dir=save_dir, model_name=f'model_epoch_{epoch+1}.pth')
 
         # Update learning rate based on scheduler type
@@ -1351,9 +1361,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         
         writer.close()  # Close the writer to free resources
 
-    # Save training history to the same directory as TensorBoard logs if available
+    # Save training history to the run metadata directory if available.
     import numpy as np
-    history_save_dir = log_dir if log_dir is not None else 'runs/history'
+    history_save_dir = metadata_dir if metadata_dir is not None else (log_dir if log_dir is not None else 'runs/history')
     os.makedirs(history_save_dir, exist_ok=True)
     history_path = os.path.join(history_save_dir, 'training_history.npy')
     np.save(history_path, history)
