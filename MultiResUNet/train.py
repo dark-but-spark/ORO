@@ -47,6 +47,56 @@ def _experiment_name_from_args(args):
     return f"train_e{args.epochs}_bs{args.batch_size}_lr{args.learning_rate}"
 
 
+def _pid_is_running(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_experiment_lock(experiment_name):
+    lock_dir = Path('runs') / '.active'
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{experiment_name}.lock"
+    pid = os.getpid()
+
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, 'w', encoding='utf-8') as lock_file:
+                lock_file.write(f"{pid}\n")
+            break
+        except FileExistsError:
+            try:
+                existing_pid = int(lock_path.read_text(encoding='utf-8').strip().splitlines()[0])
+            except (OSError, ValueError, IndexError):
+                existing_pid = -1
+
+            if _pid_is_running(existing_pid):
+                raise RuntimeError(
+                    f"Experiment '{experiment_name}' is already running with PID {existing_pid}. "
+                    "Refusing to create a second timestamped run directory."
+                )
+
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def release_lock():
+        try:
+            if lock_path.read_text(encoding='utf-8').strip().splitlines()[0] == str(pid):
+                lock_path.unlink()
+        except (OSError, IndexError):
+            pass
+
+    atexit.register(release_lock)
+    return lock_path
+
+
 def setup_run_outputs(args):
     """
     Keep all artifacts from one invocation under a single timestamped run directory.
@@ -55,8 +105,9 @@ def setup_run_outputs(args):
     could point at unrelated folders. Existing command lines still work because their
     experiment name is reused to name the run directory.
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_name = _experiment_name_from_args(args)
+    lock_path = _acquire_experiment_lock(experiment_name)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path('runs') / f"{experiment_name}_{timestamp}"
     model_dir = run_dir / 'models'
     tensorboard_dir = run_dir / 'tensorboard'
@@ -86,6 +137,8 @@ def setup_run_outputs(args):
     print("=" * 60)
     print("Run output layout")
     print("=" * 60)
+    print(f"Process ID: {os.getpid()}")
+    print(f"Run Lock: {lock_path}")
     print(f"Run Directory: {args.run_dir}")
     print(f"Original Save Directory: {original_save_dir}")
     print(f"Model Directory: {args.save_dir}")
@@ -458,7 +511,12 @@ def parse_args():
 def main():
     # Parse command line arguments
     args = parse_args()
-    setup_run_outputs(args)
+    try:
+        setup_run_outputs(args)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     if args.class_weights is not None and len(args.class_weights) != args.output_channels:
         raise ValueError(
             f"--class-weights expects {args.output_channels} values, got {len(args.class_weights)}"

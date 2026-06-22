@@ -29,7 +29,8 @@ No queue is specified in the LSF files. The cluster default queue/auto-allocatio
 ```bash
 bjobs
 bjobs -l <JOBID>
-tail -f run_logs/run_A_plain_baseline.log
+tail -f runs/A_plain_baseline_*/logs/training.log
+tail -f runs/A_plain_baseline_*/logs/training.err
 tail -f lsf_logs/A_plain_baseline.<JOBID>.out
 ```
 
@@ -66,4 +67,3 @@ http://localhost:6006
 `B_combined_loss`: only changes loss to BCE/Dice combined loss.
 
 `B_lr_step`: only changes LR scheduler to StepLR.
-

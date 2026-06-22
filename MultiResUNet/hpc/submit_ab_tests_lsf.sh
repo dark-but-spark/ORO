@@ -13,7 +13,7 @@ CONDA_ENV="${CONDA_ENV:-multiresunet}"
 CUDA_MODULE="${CUDA_MODULE:-cuda/12.1}"
 
 cd "$PROJECT"
-mkdir -p lsf_logs run_logs models runs/logs
+mkdir -p lsf_logs models runs/logs
 
 COMMON="--validation-split 0.1 --scale --scale-factor 0.5 --input-channels 3 --output-channels 4 --epochs 50 --batch-size 16 --learning-rate 2e-5 --gradient-clip 0.5 --weight-decay 2e-4 --num-workers 4 --prefetch-factor 2 --repeat-factor 1 --verbose --save-model --tensorboard --early-stopping-patience 8 --device cuda --seed 42"
 
@@ -36,7 +36,7 @@ module load ${CUDA_MODULE}
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 
-python train.py ${COMMON} --save-dir models/${name} --log-dir runs/logs/${name} ${extra} > run_logs/run_${name}.log 2>&1
+python train.py ${COMMON} --save-dir models/${name} ${extra}
 JOB
 
   echo "Submitting ${name}"
@@ -49,4 +49,3 @@ make_job B_strong_aug "--train-augmentation --augmentation-strength strong --lr-
 make_job B_focal_loss "--no-train-augmentation --use-focal-loss --focal-alpha 0.25 --focal-gamma 1.0 --lr-scheduler cosine"
 make_job B_combined_loss "--no-train-augmentation --use-combined-loss --bce-weight 0.7 --dice-weight 0.3 --lr-scheduler cosine"
 make_job B_lr_step "--no-train-augmentation --lr-scheduler step --lr-step-size 20 --lr-gamma 0.5"
-
