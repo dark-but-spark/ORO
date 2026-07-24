@@ -1,6 +1,201 @@
 # MultiResUNet / SMP-Unet Training Experiment Log
 
-本文档总结截至 2026-06-21 的训练路径、最新运行结果、代码能力更新，以及下一批训练计划。
+本文档总结截至 2026-07-24 的训练路径、最新运行结果、代码能力更新，以及下一批训练计划。
+
+## 2026-07-24 最新运行结论
+
+本轮最新数据来自：
+
+```text
+runsTemp/runsABCtest/logs
+experiment_analysis.md
+```
+
+当前最高结果已经从 `0.76851` 推进到：
+
+```text
+实验: P_smp_resnet34_cls2w125_os15_tta_long140_tmax100_20260724_161215
+模型: SMP-Unet
+encoder: resnet34
+encoder_weights: imagenet
+scale-factor: 0.75
+class weights: [1, 1, 1.25, 1]
+class2 oversampling: 1.5
+loss: BCE:Dice = 7:3
+augmentation: cosine curriculum, max level=0.4
+epochs: 140
+lr scheduler: cosine
+lr_cosine_t_max: 100
+val_tta: flips
+best val_dice: 0.77262 @ E114
+best val_jaccard: 0.68591
+best train_dice: 0.87948
+train-val gap @best: +0.10686
+final val_dice: 0.76122
+completed epochs: 140
+stopped early: false
+```
+
+### 本轮排序
+
+```text
+1. tta_long140_tmax100     0.77262 @E114  TTA + 140ep + T_max=100
+2. long140_tmax100         0.76851 @E98   140ep + T_max=100
+3. tta_20260719            0.76798 @E91   TTA
+4. plateau                 0.76516 @E116  plateau scheduler
+5. aug05                   0.76486 @E94   aug max=0.5
+6. fullres_bs8             0.76468 @E99   scale=1.0, bs=8
+7. wd1e3                   0.76381 @E100  weight_decay=1e-3
+8. cls2w10_v1              0.76234 @E92   no class2 upweight
+9. lr5e5                   0.76084 @E68   lr=5e-5
+10. focaldice73_v1         0.76064 @E64   focal+dice 7:3
+11. focaldice73_v2         0.76004 @E115  focal+dice 7:3 repeat
+12. focaldice55            0.75952 @E115  focal+dice 5:5
+13. focal_fullres_plateau  0.75880 @E81   focal + fullres + plateau
+14. resnet50               0.75834 @E108  larger encoder
+15. purefocal              0.72062 @E100  pure focal
+```
+
+### 新判断
+
+1. `TTA + long140 + T_max=100` 是当前明确最优组合，比无 TTA 长训练提升 `+0.0041`，比 07-19 TTA 提升 `+0.0046`。
+2. 140 轮完整跑完且没有早停，说明这个配置不是早停偶然峰值；长周期学习率确实有价值。
+3. 当前核心瓶颈仍是过拟合：最优模型 `train-val gap=+0.10686`，没有因为 TTA 消失。
+4. `Focal` 路线已经可以停止。纯 Focal 只有 `0.72062`，Focal+Dice 也停在 `0.759-0.761`。
+5. `plateau scheduler`、`lr=5e-5`、`resnet50` 都没有超过 cosine + resnet34 主线。
+6. `fullres_bs8` 和 `wd1e3` 虽然没有提分，但显著降低 gap，说明下一步应该从“泛化正则化”而不是“更强损失函数”里找突破。
+
+### 下一步优先级
+
+```text
+P0: 做 top checkpoints / top models 的概率平均 ensemble，优先验证是否能无训练突破 0.775。
+P1: 给 smp_unet 增加真正生效的 decoder/head dropout 接口，再围绕 0.1/0.2 做小范围实验。
+P2: 在当前 best 配置上测试 SWA/EMA 或 top-k checkpoint averaging，目标减少 E114 后回落。
+P3: fullres + 正则化重跑一条干净对照，不要叠 focal，验证低 gap 是否能转化为 Dice。
+P4: 做 class2 和边界错误分析，决定是否值得实现 boundary loss / boundary dice。
+```
+
+暂时不建议继续扩大：
+
+```text
+1. Focal / pure focal / focal+fullres
+2. resnet50
+3. aug max 0.5 以上
+4. lr 5e-5
+5. 单纯增加 epochs 但不改变 T_max、正则化或模型平均
+```
+
+## 2026-07-22 最新运行结论
+
+本轮最新数据来自：
+
+```text
+runsTemp/runsABCtest/logs
+TRAINING_ANALYSIS.md
+```
+
+当前最佳已经从 6 月的 `0.76646` 小幅推进到：
+
+```text
+实验: P_smp_resnet34_cls2w125_os15_long140_tmax100_20260721_143943
+模型: SMP-Unet
+encoder: resnet34
+encoder_weights: imagenet
+scale-factor: 0.75
+class weights: [1, 1, 1.25, 1]
+class2 oversampling: 1.5
+epochs: 140
+lr_cosine_t_max: 100
+best val_dice: 0.76851 @ E98
+best val_jaccard: 0.68045
+per-class Dice @best: class0=0.8473, class1=0.8051, class2=0.6113, class3=0.8545
+final val_dice: 0.75842
+tail10 val_dice: 0.75967 ± 0.00392
+```
+
+当前最值得关注的亚军是：
+
+```text
+实验: P_smp_resnet34_cls2w125_os15_tta_20260719_221021
+best val_dice: 0.76798 @ E91
+best val_jaccard: 0.68205
+per-class Dice @best: class0=0.8517, class1=0.8121, class2=0.6402, class3=0.8537
+final val_dice: 0.76629
+tail10 val_dice: 0.76404 ± 0.00200
+```
+
+判断：
+
+```text
+总 Dice 最强: long140_tmax100, 0.76851
+Jaccard / class2 最强: os15_tta_20260719, Jaccard=0.68205, class2=0.6402
+当前真实平台: 0.768 左右
+当前下一目标: 稳定突破 0.77
+```
+
+### 最新实验排序
+
+```text
+1. cls2w125_os15_long140_tmax100     0.76851 @E98
+2. cls2w125_os15_tta_20260719        0.76798 @E91
+3. cls2w125_os15_aug05               0.76486 @E94
+4. cls2w125_os15_wd1e3               0.76381 @E100
+5. cls2w125_os15_tta_20260720        0.76301 @E44
+6. cls2w10_os15_20260720             0.76234 @E92
+7. cls2w10_os15_20260721             0.75916 @E108
+8. resnet50_cls2w125_os15            0.75834 @E108
+```
+
+### 最新消融结论
+
+1. `long140 + lr_cosine_t_max=100` 是当前最高点，但比 `os15_tta` 只高 `0.00053`，收益很小。
+2. `TTA` 结果不完全稳定：一条到 `0.76798`，另一条早停在 `0.76301`。但第一条的 final/tail 都很好，不应丢掉。
+3. `aug_max=0.5` 没有超过 `0.4`，说明增强上限继续加大不是主线。
+4. `weight_decay=1e-3` 降低 train-val gap，但 best Dice 下降到 `0.76381`，适合泛化保守方案，不适合冲最高分。
+5. `resnet50` 没有超过 `resnet34`，继续加大 encoder 暂时不是主线。
+6. `class2 weight=1.0 + os15` 可达到 `0.76234/0.75916`，说明 class2 权重 `1.25` 仍有必要。
+
+## 参考图实验方向可行性
+
+参考图提出 R1-R8。结合当前代码与已有结果，评估如下：
+
+```text
+R1 Focal + Dice (7:3)
+可行。当前代码支持 --use-combined-loss --use-focal-loss。
+值得试，但优先级中等；旧 MultiResUNet 的 focal 单独路线失败，不代表 SMP+os15 下也失败。
+
+R2 Focal + Dice (5:5)
+可行，但风险更高。此前提高 Dice 权重没有收益，5:5 可能牺牲 BCE 的分类校准。
+
+R3 纯 Focal
+可行，作为排除实验可以跑一条。预期不高。
+
+R4 LR 5e-5
+可行但风险大。旧实验中更高 LR 容易不稳；SMP 可能更能承受，但建议只作为探索。
+
+R5 Plateau LR
+可行，且值得试。当前平台明显，ReduceLROnPlateau 比固定 cosine 更符合“卡住后降 LR”的需求。
+
+R6 全分辨率 scale=1.0
+可行但成本高。旧架构 full-res 失败，SMP 可能更好；建议 batch=8，先单条验证。
+
+R7 Dropout 0.4
+当前对 smp_unet 不可直接生效。--dropout-rate 目前只作用于原 MultiResUNet。
+如果要测 SMP dropout，需要额外改代码，在 SMP decoder/head 中显式插入 dropout。
+
+R8 组合拳 Focal + FullRes + Plateau
+可行但不适合作为第一批主线。变量太多，若变好/变坏都难归因。
+建议在 R1/R5/R6 中至少一条有正信号后再组合。
+```
+
+本轮策略：
+
+```text
+优先试: R5 Plateau LR, R1 Focal+Dice(7:3), R6 FullRes
+谨慎试: R2, R3, R4
+暂不直接试: R7，除非先改代码
+最后再试: R8 组合拳
+```
 
 ## 当前最佳结果
 
