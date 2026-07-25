@@ -445,6 +445,8 @@ def parse_args():
     parser.add_argument('--val-tta', type=str, default='none',
                         choices=['none', 'flips'],
                         help='Validation-time test-time augmentation. "flips" averages original/h/v/hv flips (default: none)')
+    parser.add_argument('--metric-ignore-classes', type=int, nargs='+', default=None,
+                        help='Optional class indices excluded from extra validation metrics only, e.g. --metric-ignore-classes 2')
     
     # Debugging options
     parser.add_argument('--debug', action='store_true',
@@ -574,6 +576,7 @@ def main():
     print(f"Class Weights: {args.class_weights if args.class_weights is not None else 'None'}")
     print(f"Dropout Rate: {args.dropout_rate}")
     print(f"Validation TTA: {args.val_tta}")
+    print(f"Metric Ignore Classes: {args.metric_ignore_classes if args.metric_ignore_classes else 'None'}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
 
@@ -792,6 +795,7 @@ def main():
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
             val_tta=args.val_tta,
+            metric_ignore_classes=args.metric_ignore_classes,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,
@@ -903,6 +907,7 @@ def main():
             tb_image_interval=args.tb_image_interval,
             tb_num_images=args.tb_num_images,
             val_tta=args.val_tta,
+            metric_ignore_classes=args.metric_ignore_classes,
             # Loss function configuration for sparse/imbalanced datasets
             use_focal_loss=args.use_focal_loss,
             focal_alpha=args.focal_alpha,

@@ -301,11 +301,26 @@ def main():
         "per_class": {},
     }
     for class_idx, class_name in enumerate(class_names):
+        nonempty_dice = [
+            float(row[f"{class_name}_dice"])
+            for row in rows
+            if float(row[f"{class_name}_true_pixels"]) > 0
+        ]
+        nonempty_jaccard = [
+            float(row[f"{class_name}_jaccard"])
+            for row in rows
+            if float(row[f"{class_name}_true_pixels"]) > 0
+        ]
         summary["per_class"][class_name] = {
             "mean_dice": float(class_dice[:, class_idx].mean()) if class_dice.size else None,
             "std_dice": float(class_dice[:, class_idx].std()) if class_dice.size else None,
             "mean_jaccard": float(class_jaccard[:, class_idx].mean()) if class_jaccard.size else None,
             "std_jaccard": float(class_jaccard[:, class_idx].std()) if class_jaccard.size else None,
+            "gt_nonempty_count": len(nonempty_dice),
+            "gt_nonempty_mean_dice": float(np.mean(nonempty_dice)) if nonempty_dice else None,
+            "gt_nonempty_std_dice": float(np.std(nonempty_dice)) if nonempty_dice else None,
+            "gt_nonempty_mean_jaccard": float(np.mean(nonempty_jaccard)) if nonempty_jaccard else None,
+            "gt_nonempty_std_jaccard": float(np.std(nonempty_jaccard)) if nonempty_jaccard else None,
         }
 
     summary_path = out_dir / "per_class_summary.json"

@@ -465,6 +465,21 @@ def per_class_segmentation_metrics(y_true, y_pred):
     return dice.detach().cpu(), jaccard.detach().cpu()
 
 
+def _sanitize_metric_ignore_classes(metric_ignore_classes, output_channels):
+    if not metric_ignore_classes:
+        return []
+    ignored = sorted({int(idx) for idx in metric_ignore_classes})
+    invalid = [idx for idx in ignored if idx < 0 or idx >= output_channels]
+    if invalid:
+        raise ValueError(
+            f"metric_ignore_classes contains invalid indices {invalid}; "
+            f"valid range is 0..{output_channels - 1}"
+        )
+    if len(ignored) >= output_channels:
+        raise ValueError("metric_ignore_classes cannot ignore every output channel")
+    return ignored
+
+
 def predict_prob_with_tta(model, inputs, tta_mode='none'):
     """Return sigmoid probabilities, optionally averaged over simple flip TTA."""
     if tta_mode is None or tta_mode == 'none':
@@ -657,7 +672,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               curriculum_level_step=0.05, curriculum_adapt_window=3,
               curriculum_adapt_tolerance=0.002, curriculum_min_level_epochs=4,
               # TensorBoard visualization configuration
-              tb_image_interval=5, tb_num_images=4, val_tta='none'):
+              tb_image_interval=5, tb_num_images=4, val_tta='none',
+              metric_ignore_classes=None):
     """
     Train the model for multiple epochs and evaluate after each epoch.
 
@@ -706,6 +722,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         tb_image_interval {int} -- Epoch interval for logging validation prediction panels. Set 0 to disable.
         tb_num_images {int} -- Number of fixed validation samples to visualize.
         val_tta {str} -- Validation-time test-time augmentation: 'none' or 'flips'.
+        metric_ignore_classes {list[int]} -- Optional classes excluded from extra validation metrics only.
     
     Returns:
         dict: Training history containing loss and metrics
@@ -717,6 +734,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
     # Move model to the specified device
     device = torch.device(device)
     model.to(device)
+    metric_ignore_classes = _sanitize_metric_ignore_classes(metric_ignore_classes, output_channels)
+    metric_kept_classes = [idx for idx in range(output_channels) if idx not in metric_ignore_classes]
+    metric_ignore_suffix = "_".join(str(idx) for idx in metric_ignore_classes)
 
     # Create DataLoader if not provided
     if train_loader is None:
@@ -873,6 +893,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'tb_image_interval': tb_image_interval,
         'tb_num_images': tb_num_images,
         'val_tta': val_tta,
+        'metric_ignore_classes': metric_ignore_classes,
+        'metric_kept_classes': metric_kept_classes,
         'num_workers': num_workers,
         'prefetch_factor': prefetch_factor,
         'save_model': save_model,
@@ -950,6 +972,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'val_loss': [],
         'val_dice': [],
         'val_jaccard': [],
+        'val_dice_ignore_classes': [],
+        'val_jaccard_ignore_classes': [],
+        'val_macro_class_dice_ignore_classes': [],
+        'val_macro_class_jaccard_ignore_classes': [],
         'best_val_dice': [],
         'best_epoch': [],
         'learning_rate': [],
@@ -1052,6 +1078,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         val_running_loss = 0.0
         total_dice = 0.0
         total_jaccard = 0.0
+        total_ignore_dice = 0.0
+        total_ignore_jaccard = 0.0
         total_class_dice = None
         total_class_jaccard = None
         num_batches = 0
@@ -1069,6 +1097,11 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 batch_dice = dice_coef(Y_val_batch, Y_val_binary)
                 batch_jaccard = jacard(Y_val_batch, Y_val_binary)
                 class_dice, class_jaccard = per_class_segmentation_metrics(Y_val_batch, Y_val_binary)
+                if metric_ignore_classes:
+                    kept_true = Y_val_batch[:, metric_kept_classes]
+                    kept_pred = Y_val_binary[:, metric_kept_classes]
+                    total_ignore_dice += dice_coef(kept_true, kept_pred).item()
+                    total_ignore_jaccard += jacard(kept_true, kept_pred).item()
 
                 val_running_loss += val_loss.item()
                 total_dice += batch_dice.item()
@@ -1082,7 +1115,27 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         avg_jaccard = total_jaccard / max(1, num_batches)
         avg_class_dice = (total_class_dice / max(1, num_batches)).tolist() if total_class_dice is not None else []
         avg_class_jaccard = (total_class_jaccard / max(1, num_batches)).tolist() if total_class_jaccard is not None else []
-        return avg_val_loss, avg_dice, avg_jaccard, avg_class_dice, avg_class_jaccard
+        if metric_ignore_classes:
+            avg_ignore_dice = total_ignore_dice / max(1, num_batches)
+            avg_ignore_jaccard = total_ignore_jaccard / max(1, num_batches)
+            avg_macro_ignore_dice = sum(avg_class_dice[idx] for idx in metric_kept_classes) / len(metric_kept_classes)
+            avg_macro_ignore_jaccard = sum(avg_class_jaccard[idx] for idx in metric_kept_classes) / len(metric_kept_classes)
+        else:
+            avg_ignore_dice = None
+            avg_ignore_jaccard = None
+            avg_macro_ignore_dice = None
+            avg_macro_ignore_jaccard = None
+        return (
+            avg_val_loss,
+            avg_dice,
+            avg_jaccard,
+            avg_class_dice,
+            avg_class_jaccard,
+            avg_ignore_dice,
+            avg_ignore_jaccard,
+            avg_macro_ignore_dice,
+            avg_macro_ignore_jaccard,
+        )
 
     def log_validation_images(epoch_number):
         if writer is None or tb_image_interval is None or tb_image_interval <= 0:
@@ -1151,7 +1204,17 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         epoch_jaccard = total_jaccard / num_batches
 
         # Evaluate on validation set and collect all logging metrics in a single pass.
-        avg_val_loss, val_dice, val_jaccard, val_class_dice, val_class_jaccard = evaluate_with_details()
+        (
+            avg_val_loss,
+            val_dice,
+            val_jaccard,
+            val_class_dice,
+            val_class_jaccard,
+            val_dice_ignore,
+            val_jaccard_ignore,
+            val_macro_class_dice_ignore,
+            val_macro_class_jaccard_ignore,
+        ) = evaluate_with_details()
         avg_val_losses.append(avg_val_loss)
         model.train()
 
@@ -1162,6 +1225,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         history['val_loss'].append(avg_val_loss)
         history['val_dice'].append(val_dice)
         history['val_jaccard'].append(val_jaccard)
+        history['val_dice_ignore_classes'].append(val_dice_ignore)
+        history['val_jaccard_ignore_classes'].append(val_jaccard_ignore)
+        history['val_macro_class_dice_ignore_classes'].append(val_macro_class_dice_ignore)
+        history['val_macro_class_jaccard_ignore_classes'].append(val_macro_class_jaccard_ignore)
         history['augmentation_schedule_level'].append(augmentation_schedule_level)
         history['val_class_dice'].append(val_class_dice)
         history['val_class_jaccard'].append(val_class_jaccard)
@@ -1215,6 +1282,9 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                       f"recent={adaptive_recent_val_dice if adaptive_recent_val_dice is not None else 'NA'}, "
                       f"level_epochs={adaptive_level_epochs}, changed={adaptive_level_changed}")
         print(f"  Validation Dice: {val_dice:.4f}, Jaccard: {val_jaccard:.4f}")
+        if metric_ignore_classes:
+            print(f"  Validation Dice without classes {metric_ignore_classes}: {val_dice_ignore:.4f}, Jaccard: {val_jaccard_ignore:.4f}")
+            print(f"  Validation macro class Dice without classes {metric_ignore_classes}: {val_macro_class_dice_ignore:.4f}")
         print(f"  Validation Loss: {avg_val_loss:.4f}, Dice Gap: {train_val_dice_gap:+.4f}")
         print(f"  Best Validation Dice: {best_val_dice:.4f} (epoch {best_epoch})")
         if early_stopping_enabled:
@@ -1230,6 +1300,11 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 writer.add_scalar('Metrics/jaccard', epoch_jaccard, epoch+1)
                 writer.add_scalar('Metrics/val_dice', val_dice, epoch+1)
                 writer.add_scalar('Metrics/val_jaccard', val_jaccard, epoch+1)
+                if metric_ignore_classes:
+                    writer.add_scalar(f'Metrics/val_dice_ignore_classes_{metric_ignore_suffix}', val_dice_ignore, epoch+1)
+                    writer.add_scalar(f'Metrics/val_jaccard_ignore_classes_{metric_ignore_suffix}', val_jaccard_ignore, epoch+1)
+                    writer.add_scalar(f'Metrics/val_macro_class_dice_ignore_classes_{metric_ignore_suffix}', val_macro_class_dice_ignore, epoch+1)
+                    writer.add_scalar(f'Metrics/val_macro_class_jaccard_ignore_classes_{metric_ignore_suffix}', val_macro_class_jaccard_ignore, epoch+1)
                 writer.add_scalar('Metrics/train_val_dice_gap', train_val_dice_gap, epoch+1)
                 writer.add_scalar('Metrics/train_val_jaccard_gap', train_val_jaccard_gap, epoch+1)
                 writer.add_scalar('Metrics/best_val_dice', best_val_dice, epoch+1)
@@ -1318,6 +1393,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'final_val_dice': float(history['val_dice'][-1]) if history['val_dice'] else None,
         'final_train_jaccard': float(history['jaccard'][-1]) if history['jaccard'] else None,
         'final_val_jaccard': float(history['val_jaccard'][-1]) if history['val_jaccard'] else None,
+        'best_val_dice_ignore_classes': float(history['val_dice_ignore_classes'][best_index]) if best_index is not None and history['val_dice_ignore_classes'][best_index] is not None else None,
+        'best_val_jaccard_ignore_classes': float(history['val_jaccard_ignore_classes'][best_index]) if best_index is not None and history['val_jaccard_ignore_classes'][best_index] is not None else None,
+        'best_val_macro_class_dice_ignore_classes': float(history['val_macro_class_dice_ignore_classes'][best_index]) if best_index is not None and history['val_macro_class_dice_ignore_classes'][best_index] is not None else None,
+        'final_val_dice_ignore_classes': float(history['val_dice_ignore_classes'][-1]) if history['val_dice_ignore_classes'] and history['val_dice_ignore_classes'][-1] is not None else None,
+        'final_val_jaccard_ignore_classes': float(history['val_jaccard_ignore_classes'][-1]) if history['val_jaccard_ignore_classes'] and history['val_jaccard_ignore_classes'][-1] is not None else None,
+        'final_val_macro_class_dice_ignore_classes': float(history['val_macro_class_dice_ignore_classes'][-1]) if history['val_macro_class_dice_ignore_classes'] and history['val_macro_class_dice_ignore_classes'][-1] is not None else None,
         'final_train_val_dice_gap': float(history['train_val_dice_gap'][-1]) if history['train_val_dice_gap'] else None,
         'final_learning_rate': float(history['learning_rate'][-1]) if history['learning_rate'] else None,
         'final_augmentation_schedule_level': float(history['augmentation_schedule_level'][-1]) if history['augmentation_schedule_level'] else None,
@@ -1349,6 +1430,15 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 'final/train_loss': float(history['loss'][-1]) if history['loss'] else 0.0,
                 'final/val_loss': float(history['val_loss'][-1]) if history['val_loss'] else 0.0
             }
+            if metric_ignore_classes and best_index is not None:
+                final_metrics[f'final/val_dice_ignore_classes_{metric_ignore_suffix}'] = (
+                    float(history['val_dice_ignore_classes'][best_index])
+                    if history['val_dice_ignore_classes'][best_index] is not None else 0.0
+                )
+                final_metrics[f'final/val_macro_class_dice_ignore_classes_{metric_ignore_suffix}'] = (
+                    float(history['val_macro_class_dice_ignore_classes'][best_index])
+                    if history['val_macro_class_dice_ignore_classes'][best_index] is not None else 0.0
+                )
             
             # Log final metrics to replace placeholder
             writer.add_hparams(hparams, final_metrics)
