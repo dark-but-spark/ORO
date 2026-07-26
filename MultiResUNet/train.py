@@ -28,11 +28,13 @@ class TeeStream:
 
     def write(self, data):
         self.stream.write(data)
-        self.log_file.write(data)
+        if not self.log_file.closed:
+            self.log_file.write(data)
 
     def flush(self):
         self.stream.flush()
-        self.log_file.flush()
+        if not self.log_file.closed:
+            self.log_file.flush()
 
     def isatty(self):
         return self.stream.isatty()
@@ -129,10 +131,23 @@ def setup_run_outputs(args):
 
     stdout_log = open(log_dir / 'training.log', 'a', encoding='utf-8', buffering=1)
     stderr_log = open(log_dir / 'training.err', 'a', encoding='utf-8', buffering=1)
-    sys.stdout = TeeStream(sys.stdout, stdout_log)
-    sys.stderr = TeeStream(sys.stderr, stderr_log)
-    atexit.register(stdout_log.close)
-    atexit.register(stderr_log.close)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = TeeStream(original_stdout, stdout_log)
+    sys.stderr = TeeStream(original_stderr, stderr_log)
+
+    def close_run_logs():
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        for log_file in (stdout_log, stderr_log):
+            try:
+                if not log_file.closed:
+                    log_file.flush()
+                    log_file.close()
+            except OSError:
+                pass
+
+    atexit.register(close_run_logs)
 
     print("=" * 60)
     print("Run output layout")

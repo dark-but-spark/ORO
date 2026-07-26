@@ -31,6 +31,21 @@ def _class_weight_view(class_weights, inputs):
     return class_weights.to(inputs.device, dtype=inputs.dtype).view(1, -1, 1, 1)
 
 
+def _tensorboard_hparams(hparams):
+    allowed = (int, float, str, bool, torch.Tensor)
+    sanitized = {}
+    for key, value in hparams.items():
+        if value is None:
+            sanitized[key] = ""
+        elif isinstance(value, allowed):
+            sanitized[key] = value
+        elif isinstance(value, (list, tuple, dict)):
+            sanitized[key] = json.dumps(value, ensure_ascii=False)
+        else:
+            sanitized[key] = str(value)
+    return sanitized
+
+
 class WeightedBCEWithLogitsLoss(nn.Module):
     """BCEWithLogitsLoss with optional per-channel weights."""
     def __init__(self, class_weights=None):
@@ -1441,7 +1456,7 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
                 )
             
             # Log final metrics to replace placeholder
-            writer.add_hparams(hparams, final_metrics)
+            writer.add_hparams(_tensorboard_hparams(hparams), final_metrics)
             writer.flush()
             
             print(f"  ✓ Final metrics recorded to TensorBoard")
