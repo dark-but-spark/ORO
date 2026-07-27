@@ -7,6 +7,44 @@ import torch
 from torch.utils.data import Dataset
 
 
+IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+
+
+def list_paired_image_mask_files(img_dir, mask_dir, limit=None):
+    """Return image and .npz mask filenames matched by stem."""
+    img_files = [
+        name for name in next(os.walk(img_dir))[2]
+        if os.path.splitext(name)[1].lower() in IMAGE_SUFFIXES
+    ]
+    mask_files = [
+        name for name in next(os.walk(mask_dir))[2]
+        if os.path.splitext(name)[1].lower() == '.npz'
+    ]
+    img_files.sort()
+    mask_by_stem = {os.path.splitext(name)[0]: name for name in mask_files}
+
+    paired_img_files = []
+    paired_mask_files = []
+    missing_masks = []
+    for img_file in img_files:
+        stem = os.path.splitext(img_file)[0]
+        mask_file = mask_by_stem.get(stem)
+        if mask_file is None:
+            missing_masks.append(img_file)
+            continue
+        paired_img_files.append(img_file)
+        paired_mask_files.append(mask_file)
+
+    if limit:
+        paired_img_files = paired_img_files[:limit]
+        paired_mask_files = paired_mask_files[:limit]
+
+    if missing_masks:
+        print(f"WARNING: {len(missing_masks)} images in {img_dir} have no matching .npz mask in {mask_dir}")
+
+    return paired_img_files, paired_mask_files
+
+
 class SegmentationDataset(Dataset):
     """Custom Dataset for loading image segmentation data on-demand.
     
@@ -54,13 +92,8 @@ class SegmentationDataset(Dataset):
         self.augmentation_schedule_level = max(0.0, min(1.0, float(augmentation_schedule_level)))
         
         # Get file lists
-        if img_files is None:
-            img_files = next(os.walk(img_dir))[2]
-            img_files.sort()
-        
-        if mask_files is None:
-            mask_files = next(os.walk(mask_dir))[2]
-            mask_files.sort()
+        if img_files is None or mask_files is None:
+            img_files, mask_files = list_paired_image_mask_files(img_dir, mask_dir, limit=limit)
         
         # Apply limit
         if limit:
@@ -483,17 +516,7 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
     """
     import torch
     
-    # Get all file lists
-    img_files = next(os.walk(img_dir))[2]
-    mask_files = next(os.walk(mask_dir))[2]
-    
-    img_files.sort()
-    mask_files.sort()
-    
-    # Apply limit
-    if limit:
-        img_files = img_files[:limit]
-        mask_files = mask_files[:limit]
+    img_files, mask_files = list_paired_image_mask_files(img_dir, mask_dir, limit=limit)
     
     paired_files = list(zip(img_files, mask_files))
     if shuffle:
@@ -579,6 +602,104 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
     )
     
     return train_dataset, val_dataset, len(train_img_files), n_val
+
+
+def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='data/train/masks',
+                          val_img_dir='data/valid/images', val_mask_dir='data/valid/masks',
+                          limit=None, scale=False, scale_factor=0.5,
+                          original_height=None, original_width=None, repeat_factor=1,
+                          train_apply_augmentation=True, val_apply_augmentation=False,
+                          augmentation_strength='mild', strong_aug_prob=0.0,
+                          strong_aug_strength='strong', augmentation_schedule_level=0.0,
+                          oversample_class_indices=None, oversample_factor=1.0,
+                          oversample_min_pixels=1, seed=42):
+    """Create datasets from explicit train and validation directories."""
+    train_img_files, train_mask_files = list_paired_image_mask_files(
+        train_img_dir, train_mask_dir, limit=limit
+    )
+    val_img_files, val_mask_files = list_paired_image_mask_files(
+        val_img_dir, val_mask_dir, limit=limit
+    )
+    original_n_train = len(train_img_files)
+
+    if oversample_class_indices and oversample_factor and oversample_factor > 1.0:
+        train_img_files, train_mask_files, matched = oversample_training_files_by_mask_class(
+            train_img_files,
+            train_mask_files,
+            mask_dir=train_mask_dir,
+            class_indices=oversample_class_indices,
+            factor=oversample_factor,
+            min_pixels=oversample_min_pixels,
+            seed=seed
+        )
+        print(f"Class oversampling: classes={oversample_class_indices}, factor={oversample_factor}, "
+              f"matched={matched}, training samples after oversampling={len(train_img_files)}")
+
+    print(f"Fixed split training samples: {original_n_train}")
+    print(f"Fixed split validation samples: {len(val_img_files)}")
+    if scale:
+        print(f"  Scale factor: {scale_factor*100:.0f}%")
+    if len(train_img_files) != original_n_train:
+        print(f"Effective training samples: {len(train_img_files)}")
+
+    train_dataset = SegmentationDataset(
+        img_dir=train_img_dir,
+        mask_dir=train_mask_dir,
+        img_files=train_img_files,
+        mask_files=train_mask_files,
+        limit=None,
+        transform=None,
+        scale=scale,
+        scale_factor=scale_factor,
+        original_height=original_height,
+        original_width=original_width,
+        repeat_factor=repeat_factor,
+        apply_augmentation=train_apply_augmentation,
+        augmentation_strength=augmentation_strength,
+        strong_aug_prob=strong_aug_prob,
+        strong_aug_strength=strong_aug_strength,
+        augmentation_schedule_level=augmentation_schedule_level
+    )
+
+    val_dataset = SegmentationDataset(
+        img_dir=val_img_dir,
+        mask_dir=val_mask_dir,
+        img_files=val_img_files,
+        mask_files=val_mask_files,
+        limit=None,
+        transform=None,
+        scale=scale,
+        scale_factor=scale_factor,
+        original_height=original_height,
+        original_width=original_width,
+        repeat_factor=1,
+        apply_augmentation=val_apply_augmentation,
+        augmentation_strength=augmentation_strength,
+        strong_aug_prob=0.0,
+        strong_aug_strength=strong_aug_strength,
+        augmentation_schedule_level=0.0
+    )
+
+    return train_dataset, val_dataset, len(train_img_files), len(val_img_files)
+
+
+def create_single_dataset(img_dir, mask_dir, limit=None, scale=False, scale_factor=0.5,
+                          apply_augmentation=False, augmentation_strength='mild'):
+    """Create one non-split dataset, used for fixed test evaluation."""
+    img_files, mask_files = list_paired_image_mask_files(img_dir, mask_dir, limit=limit)
+    return SegmentationDataset(
+        img_dir=img_dir,
+        mask_dir=mask_dir,
+        img_files=img_files,
+        mask_files=mask_files,
+        limit=None,
+        transform=None,
+        scale=scale,
+        scale_factor=scale_factor,
+        repeat_factor=1,
+        apply_augmentation=apply_augmentation,
+        augmentation_strength=augmentation_strength,
+    )
 
 
 def oversample_training_files_by_mask_class(img_files, mask_files, mask_dir,

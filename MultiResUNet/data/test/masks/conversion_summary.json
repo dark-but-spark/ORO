@@ -1,0 +1,11 @@
+{
+  "img_dir": "data\\test\\images",
+  "label_dir": "data\\test\\labels",
+  "output_dir": "data\\test\\masks",
+  "num_classes": 4,
+  "images": 459,
+  "missing_labels": 0,
+  "invalid_images": 0,
+  "objects": 1413,
+  "skipped_rows": 0
+}

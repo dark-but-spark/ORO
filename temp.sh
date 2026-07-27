@@ -2,22 +2,37 @@
 set -euo pipefail
 
 # Run from the MultiResUNet directory on the server:
-#   cd ~/zjm/ORO1/ORO/MultiResUNet
+#   cd ~/ORO/MultiResUNet
 #   bash ../temp.sh
 #
-# Purpose:
-#   Small controlled training probes for the class2-label-noise hypothesis.
-#   Keep the current strongest SMP-UNet setup fixed, then reduce class2 loss weight
-#   and compare whether class0/1/3 plus overall validation Dice improve.
+# Optional one-time mask conversion after re-extracting YOLO labels:
+#   RUN_MASK_CONVERT=1 bash ../temp.sh
 #
-# Space control:
-#   --checkpoint-interval 0 saves only best_model.pth and final model.pth
-#   --tb-image-interval 0 disables TensorBoard image panels
+# Evaluation policy:
+#   train: data/train
+#   val:   data/valid, used for early stopping and best checkpoint selection
+#   test:  data/test, evaluated once after training
 
 mkdir -p runs/logs
 
+if [[ "${RUN_MASK_CONVERT:-0}" == "1" ]]; then
+  echo "============================================================"
+  echo "Converting YOLO labels to NPZ masks for train/valid/test"
+  echo "============================================================"
+  python scripts/yolo_to_npz.py \
+    --data-root data \
+    --splits train valid test \
+    --num-classes 4
+fi
+
 COMMON_ARGS=(
-  --validation-split 0.1
+  --split-mode fixed
+  --train-img-dir data/train/images
+  --train-mask-dir data/train/masks
+  --val-img-dir data/valid/images
+  --val-mask-dir data/valid/masks
+  --test-img-dir data/test/images
+  --test-mask-dir data/test/masks
   --scale
   --scale-factor 0.75
   --input-channels 3
@@ -25,27 +40,21 @@ COMMON_ARGS=(
   --model-architecture smp_unet
   --encoder-name resnet34
   --encoder-weights imagenet
-  --epochs 120
+  --epochs 140
   --batch-size 16
   --learning-rate 2e-5
   --gradient-clip 0.5
-  --weight-decay 5e-4
+  --weight-decay 2e-4
   --num-workers 4
   --prefetch-factor 2
   --repeat-factor 1
   --train-augmentation
   --augmentation-strength mild
-  --augmentation-curriculum cosine
-  --curriculum-start-epoch 30
-  --curriculum-ramp-epochs 30
-  --curriculum-max-aug-level 0.4
-  --curriculum-target-strength moderate
   --use-combined-loss
   --bce-weight 0.7
   --dice-weight 0.3
   --lr-scheduler cosine
-  --lr-cosine-t-max 100
-  --early-stopping-min-epochs 70
+  --early-stopping-min-epochs 80
   --early-stopping-patience 25
   --checkpoint-interval 0
   --tensorboard
@@ -53,9 +62,12 @@ COMMON_ARGS=(
   --tb-num-images 0
   --verbose
   --save-model
+  --val-tta none
+  --test-tta none
+  --test-threshold 0.5
+  --metric-ignore-classes 2
   --device cuda
   --seed 42
-  --metric-ignore-classes 2
 )
 
 run_exp() {
@@ -77,54 +89,16 @@ run_exp() {
   echo
 }
 
-# Baseline rerun under the same script shape. This anchors this batch of probes.
-run_exp "Q_cls2w125_os15_tta_anchor" \
+run_exp "R_fixed_smp_resnet34_scale075_cls2w125" \
   --class-weights 1 1 1.25 1 \
   --oversample-class-indices 2 \
   --oversample-factor 1.5 \
-  --oversample-min-pixels 1 \
-  --val-tta flips
+  --oversample-min-pixels 1
 
-# Test whether reducing noisy class2 supervision releases shared representation quality.
-run_exp "Q_cls2w10_os15_tta" \
-  --class-weights 1 1 1.0 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1 \
-  --val-tta flips
-
-run_exp "Q_cls2w075_os15_tta" \
-  --class-weights 1 1 0.75 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1 \
-  --val-tta flips
-
-run_exp "Q_cls2w05_os15_tta" \
+run_exp "R_fixed_smp_resnet34_scale075_cls2w05" \
   --class-weights 1 1 0.5 1 \
   --oversample-class-indices 2 \
   --oversample-factor 1.5 \
-  --oversample-min-pixels 1 \
-  --val-tta flips
+  --oversample-min-pixels 1
 
-# Separate loss-weight effect from oversampling effect.
-run_exp "Q_cls2w075_os12_tta" \
-  --class-weights 1 1 0.75 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.2 \
-  --oversample-min-pixels 1 \
-  --val-tta flips
-
-run_exp "Q_cls2w10_noos_tta" \
-  --class-weights 1 1 1.0 1 \
-  --val-tta flips
-
-# Check whether TTA is masking or amplifying the class2 issue during model selection.
-run_exp "Q_cls2w075_os15_no_tta" \
-  --class-weights 1 1 0.75 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1 \
-  --val-tta none
-
-echo "All class2 weight probes completed."
+echo "Fixed train/valid/test training completed."

@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import torch
 import argparse
@@ -10,12 +11,21 @@ from pathlib import Path
 from datetime import datetime
 
 # Import the MultiResUNet model and utility functions
-from pytorch.MultiResUNet import MultiResUnet, dice_coef, jacard, saveModel, evaluateModel, trainStep
-from dataloading import load_data, split_data, create_datasets
+from pytorch.MultiResUNet import (
+    MultiResUnet,
+    dice_coef,
+    jacard,
+    per_class_segmentation_metrics,
+    predict_prob_with_tta,
+    saveModel,
+    evaluateModel,
+    trainStep,
+)
+from dataloading import load_data, split_data, create_datasets, create_fixed_datasets, create_single_dataset
 
 # Define paths for data
-IMAGE_DIR = 'data/imgs/'
-MASK_DIR = 'data/masks/'
+IMAGE_DIR = 'data/train/images'
+MASK_DIR = 'data/train/masks'
 
 
 class TeeStream:
@@ -38,6 +48,9 @@ class TeeStream:
 
     def isatty(self):
         return self.stream.isatty()
+
+    def close(self):
+        self.flush()
 
 
 def _experiment_name_from_args(args):
@@ -150,6 +163,179 @@ def setup_run_outputs(args):
     atexit.register(close_run_logs)
 
     print("=" * 60)
+
+
+def _make_loader(dataset, args, shuffle=False):
+    from torch.utils.data import DataLoader
+
+    cpu_count = os.cpu_count() or 4
+    optimal_workers = min(args.num_workers, max(1, cpu_count - 2))
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(args.seed)
+
+    def seed_worker(worker_id):
+        worker_seed = args.seed + worker_id
+        random.seed(worker_seed)
+        np.random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+    return DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=optimal_workers,
+        pin_memory=torch.cuda.is_available(),
+        prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
+        persistent_workers=False,
+        drop_last=False,
+        worker_init_fn=seed_worker if optimal_workers > 0 else None,
+        generator=loader_generator,
+    ), optimal_workers
+
+
+def _save_split_manifest(args, train_dataset=None, val_dataset=None, test_dataset=None):
+    manifest = {
+        "split_mode": args.split_mode,
+        "validation_split": args.validation_split,
+        "seed": args.seed,
+        "paths": {
+            "train_img_dir": args.train_img_dir,
+            "train_mask_dir": args.train_mask_dir,
+            "val_img_dir": args.val_img_dir,
+            "val_mask_dir": args.val_mask_dir,
+            "test_img_dir": args.test_img_dir,
+            "test_mask_dir": args.test_mask_dir,
+        },
+        "splits": {},
+    }
+
+    for split_name, dataset in (
+        ("train", train_dataset),
+        ("valid", val_dataset),
+        ("test", test_dataset),
+    ):
+        if dataset is None:
+            continue
+        manifest["splits"][split_name] = {
+            "count": len(dataset),
+            "img_dir": dataset.img_dir,
+            "mask_dir": dataset.mask_dir,
+            "image_files": list(dataset.img_files),
+            "mask_files": list(dataset.mask_files),
+        }
+
+    out_dir = Path(args.metadata_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_dir / "split_manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    print(f"Split manifest saved to: {manifest_path}")
+    return manifest_path
+
+
+def evaluate_loader(model, loader, device, tta_mode='none', threshold=0.5, metric_ignore_classes=None):
+    model.eval()
+    total_dice = 0.0
+    total_jaccard = 0.0
+    total_ignore_dice = 0.0
+    total_ignore_jaccard = 0.0
+    num_batches = 0
+    class_dice_sum = None
+    class_jaccard_sum = None
+
+    with torch.no_grad():
+        for images, targets in loader:
+            images = images.to(device)
+            targets = targets.to(device)
+            probs = predict_prob_with_tta(model, images, tta_mode)
+            preds = (probs >= threshold).float()
+
+            total_dice += dice_coef(targets, preds).item()
+            total_jaccard += jacard(targets, preds).item()
+            class_dice, class_jaccard = per_class_segmentation_metrics(targets, preds)
+            class_dice_sum = class_dice if class_dice_sum is None else class_dice_sum + class_dice
+            class_jaccard_sum = class_jaccard if class_jaccard_sum is None else class_jaccard_sum + class_jaccard
+
+            if metric_ignore_classes:
+                keep = [
+                    idx for idx in range(targets.size(1))
+                    if idx not in set(metric_ignore_classes)
+                ]
+                total_ignore_dice += dice_coef(targets[:, keep], preds[:, keep]).item()
+                total_ignore_jaccard += jacard(targets[:, keep], preds[:, keep]).item()
+
+            num_batches += 1
+
+    if num_batches == 0:
+        raise ValueError("Evaluation loader is empty")
+
+    metrics = {
+        "dice": total_dice / num_batches,
+        "jaccard": total_jaccard / num_batches,
+        "threshold": threshold,
+        "tta": tta_mode,
+        "batches": num_batches,
+        "class_dice": (class_dice_sum / num_batches).tolist(),
+        "class_jaccard": (class_jaccard_sum / num_batches).tolist(),
+    }
+    if metric_ignore_classes:
+        metrics["metric_ignore_classes"] = list(metric_ignore_classes)
+        metrics["dice_ignore_classes"] = total_ignore_dice / num_batches
+        metrics["jaccard_ignore_classes"] = total_ignore_jaccard / num_batches
+    return metrics
+
+
+def run_final_test_evaluation(args, model, device):
+    if not args.run_test_after_training:
+        return None
+    if not os.path.isdir(args.test_img_dir) or not os.path.isdir(args.test_mask_dir):
+        print(f"WARNING: test directories not found, skipping test evaluation: {args.test_img_dir}, {args.test_mask_dir}")
+        return None
+
+    print("\nRunning final test evaluation on fixed test split...")
+    test_dataset = create_single_dataset(
+        img_dir=args.test_img_dir,
+        mask_dir=args.test_mask_dir,
+        limit=args.test_limit,
+        scale=args.scale,
+        scale_factor=args.scale_factor,
+        apply_augmentation=False,
+        augmentation_strength=args.augmentation_strength,
+    )
+    test_loader, _ = _make_loader(test_dataset, args, shuffle=False)
+
+    best_model_path = Path(args.save_dir) / "best_model.pth"
+    if args.save_model and best_model_path.exists():
+        model.load_state_dict(torch.load(best_model_path, map_location=device))
+        model.to(device)
+        print(f"Loaded best checkpoint for test evaluation: {best_model_path}")
+    else:
+        print("Best checkpoint not found or --save-model disabled; evaluating current in-memory model.")
+
+    metrics = evaluate_loader(
+        model,
+        test_loader,
+        device,
+        tta_mode=args.test_tta,
+        threshold=args.test_threshold,
+        metric_ignore_classes=args.metric_ignore_classes,
+    )
+    metrics["split"] = "test"
+    metrics["samples"] = len(test_dataset)
+    metrics["img_dir"] = args.test_img_dir
+    metrics["mask_dir"] = args.test_mask_dir
+
+    out_dir = Path(args.metadata_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = out_dir / "test_metrics.json"
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+
+    print(f"Test Dice: {metrics['dice']:.4f}, Test Jaccard: {metrics['jaccard']:.4f}")
+    if "dice_ignore_classes" in metrics:
+        print(f"Test Dice ignore {metrics['metric_ignore_classes']}: {metrics['dice_ignore_classes']:.4f}")
+    print(f"Test metrics saved to: {metrics_path}")
+    return metrics
     print("Run output layout")
     print("=" * 60)
     print(f"Process ID: {os.getpid()}")
@@ -364,7 +550,34 @@ def parse_args():
     parser.add_argument('--data-limit', type=int, default=None, 
                         help='Number of samples to load for training (default: None). Use small values for quick testing.')
     parser.add_argument('--validation-split', type=float, default=0.1,
-                        help='Proportion of data used for validation (default: 0.1)')
+                        help='Proportion of data used for validation in random split mode (default: 0.1)')
+    parser.add_argument('--split-mode', type=str, default='fixed',
+                        choices=['fixed', 'random'],
+                        help='Data split mode. fixed uses explicit train/valid/test dirs; random uses old img/mask split (default: fixed)')
+    parser.add_argument('--train-img-dir', type=str, default='data/train/images',
+                        help='Fixed split training image directory')
+    parser.add_argument('--train-mask-dir', type=str, default='data/train/masks',
+                        help='Fixed split training .npz mask directory')
+    parser.add_argument('--val-img-dir', type=str, default='data/valid/images',
+                        help='Fixed split validation image directory')
+    parser.add_argument('--val-mask-dir', type=str, default='data/valid/masks',
+                        help='Fixed split validation .npz mask directory')
+    parser.add_argument('--test-img-dir', type=str, default='data/test/images',
+                        help='Fixed split test image directory')
+    parser.add_argument('--test-mask-dir', type=str, default='data/test/masks',
+                        help='Fixed split test .npz mask directory')
+    parser.add_argument('--run-test-after-training', dest='run_test_after_training', action='store_true',
+                        help='Evaluate best checkpoint on fixed test split after training (default: enabled)')
+    parser.add_argument('--no-test-after-training', dest='run_test_after_training', action='store_false',
+                        help='Disable final fixed test evaluation')
+    parser.add_argument('--test-limit', type=int, default=None,
+                        help='Optional sample limit for final test evaluation')
+    parser.add_argument('--test-threshold', type=float, default=0.5,
+                        help='Prediction threshold for final test evaluation (default: 0.5)')
+    parser.add_argument('--test-tta', type=str, default='none',
+                        choices=['none', 'flips'],
+                        help='TTA mode for final test evaluation (default: none)')
+    parser.set_defaults(run_test_after_training=True)
     
     # Image resizing arguments
     parser.add_argument('--scale', action='store_true',
@@ -544,7 +757,16 @@ def main():
     print("MultiResUNet Training Configuration")
     print("=" * 60)
     print(f"Data Limit: {args.data_limit} samples")
-    print(f"Validation Split: {args.validation_split:.1%}")
+    print(f"Split Mode: {args.split_mode}")
+    if args.split_mode == 'random':
+        print(f"Validation Split: {args.validation_split:.1%}")
+    else:
+        print(f"Train Images: {args.train_img_dir}")
+        print(f"Train Masks: {args.train_mask_dir}")
+        print(f"Validation Images: {args.val_img_dir}")
+        print(f"Validation Masks: {args.val_mask_dir}")
+        print(f"Test Images: {args.test_img_dir}")
+        print(f"Test Masks: {args.test_mask_dir}")
     print(f"Scale Enabled: {args.scale}")
     if args.scale:
         print(f"Scale Factor: {args.scale_factor} ({args.scale_factor*100:.0f}%)")
@@ -591,6 +813,10 @@ def main():
     print(f"Class Weights: {args.class_weights if args.class_weights is not None else 'None'}")
     print(f"Dropout Rate: {args.dropout_rate}")
     print(f"Validation TTA: {args.val_tta}")
+    print(f"Final Test Evaluation: {args.run_test_after_training}")
+    if args.run_test_after_training:
+        print(f"Final Test TTA: {args.test_tta}")
+        print(f"Final Test Threshold: {args.test_threshold}")
     print(f"Metric Ignore Classes: {args.metric_ignore_classes if args.metric_ignore_classes else 'None'}")
     print(f"Random Seed: {args.seed}")
     print("=" * 60)
@@ -671,75 +897,70 @@ def main():
     # Load data using memory-efficient approach
     print(f"\nLoading data...")
     
-    # Option 1: Use new memory-efficient Dataset approach (recommended for large datasets)
-    if args.data_limit is None or args.data_limit > 500:
+    # Option 1: Use memory-efficient Dataset approach.
+    if args.split_mode == 'fixed' or args.data_limit is None or args.data_limit > 500:
         print("Using memory-efficient dataset loading (recommended for large datasets)...")
-        from dataloading import create_datasets
-        
-        # Create datasets that will load data on-demand
-        train_dataset, val_dataset, n_train, n_val = create_datasets(
-            img_dir='data/imgs',
-            mask_dir='data/masks',
-            limit=args.data_limit,
-            train_ratio=1.0 - args.validation_split,
-            scale=args.scale,
-            scale_factor=args.scale_factor,
-            original_height=None,  # Will be determined automatically from first image
-            original_width=None,   # Will be determined automatically from first image
-            repeat_factor=args.repeat_factor,
-            train_apply_augmentation=args.train_augmentation,
-            val_apply_augmentation=args.val_augmentation,
-            augmentation_strength=args.augmentation_strength,
-            strong_aug_strength=args.curriculum_target_strength,
-            augmentation_schedule_level=0.0,
-            oversample_class_indices=args.oversample_class_indices,
-            oversample_factor=args.oversample_factor,
-            oversample_min_pixels=args.oversample_min_pixels,
-            shuffle=True,
-            seed=args.seed
-        )
-        
-        # Create DataLoaders with OPTIMIZED parameters for memory efficiency
-        from torch.utils.data import DataLoader
-        
-        # Calculate optimal num_workers based on CPU cores (leave 2 cores for system)
-        cpu_count = os.cpu_count() or 4
-        optimal_workers = min(args.num_workers, max(1, cpu_count - 2))
-        
-        loader_generator = torch.Generator()
-        loader_generator.manual_seed(args.seed)
 
-        def seed_worker(worker_id):
-            worker_seed = args.seed + worker_id
-            random.seed(worker_seed)
-            np.random.seed(worker_seed)
-            torch.manual_seed(worker_seed)
+        if args.split_mode == 'fixed':
+            train_dataset, val_dataset, n_train, n_val = create_fixed_datasets(
+                train_img_dir=args.train_img_dir,
+                train_mask_dir=args.train_mask_dir,
+                val_img_dir=args.val_img_dir,
+                val_mask_dir=args.val_mask_dir,
+                limit=args.data_limit,
+                scale=args.scale,
+                scale_factor=args.scale_factor,
+                original_height=None,
+                original_width=None,
+                repeat_factor=args.repeat_factor,
+                train_apply_augmentation=args.train_augmentation,
+                val_apply_augmentation=args.val_augmentation,
+                augmentation_strength=args.augmentation_strength,
+                strong_aug_strength=args.curriculum_target_strength,
+                augmentation_schedule_level=0.0,
+                oversample_class_indices=args.oversample_class_indices,
+                oversample_factor=args.oversample_factor,
+                oversample_min_pixels=args.oversample_min_pixels,
+                seed=args.seed
+            )
+        else:
+            train_dataset, val_dataset, n_train, n_val = create_datasets(
+                img_dir=IMAGE_DIR,
+                mask_dir=MASK_DIR,
+                limit=args.data_limit,
+                train_ratio=1.0 - args.validation_split,
+                scale=args.scale,
+                scale_factor=args.scale_factor,
+                original_height=None,
+                original_width=None,
+                repeat_factor=args.repeat_factor,
+                train_apply_augmentation=args.train_augmentation,
+                val_apply_augmentation=args.val_augmentation,
+                augmentation_strength=args.augmentation_strength,
+                strong_aug_strength=args.curriculum_target_strength,
+                augmentation_schedule_level=0.0,
+                oversample_class_indices=args.oversample_class_indices,
+                oversample_factor=args.oversample_factor,
+                oversample_min_pixels=args.oversample_min_pixels,
+                shuffle=True,
+                seed=args.seed
+            )
 
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=True,
-            num_workers=optimal_workers, 
-            pin_memory=True,
-            prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
-            persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
-            drop_last=False,  # Keep last batch to avoid data waste
-            worker_init_fn=seed_worker if optimal_workers > 0 else None,
-            generator=loader_generator
-        )
-        
-        val_loader = DataLoader(
-            val_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=False,
-            num_workers=optimal_workers, 
-            pin_memory=True,
-            prefetch_factor=args.prefetch_factor if optimal_workers > 0 else None,
-            persistent_workers=False,  # CRITICAL: Disable to prevent memory leak
-            drop_last=False,
-            worker_init_fn=seed_worker if optimal_workers > 0 else None,
-            generator=loader_generator
-        )
+        test_dataset_for_manifest = None
+        if args.split_mode == 'fixed' and os.path.isdir(args.test_img_dir) and os.path.isdir(args.test_mask_dir):
+            test_dataset_for_manifest = create_single_dataset(
+                img_dir=args.test_img_dir,
+                mask_dir=args.test_mask_dir,
+                limit=args.test_limit,
+                scale=args.scale,
+                scale_factor=args.scale_factor,
+                apply_augmentation=False,
+                augmentation_strength=args.augmentation_strength,
+            )
+        _save_split_manifest(args, train_dataset, val_dataset, test_dataset_for_manifest)
+
+        train_loader, optimal_workers = _make_loader(train_dataset, args, shuffle=True)
+        val_loader, _ = _make_loader(val_dataset, args, shuffle=False)
         
         print(f"✓ Training samples: {n_train}")
         print(f"✓ Validation samples: {n_val}")
@@ -946,6 +1167,8 @@ def main():
     if args.save_model:
         print(f"\nSaving final model to {args.save_dir}/")
         saveModel(model, args.save_dir)
+
+    run_final_test_evaluation(args, model, device)
 
 if __name__ == "__main__":
     main()
