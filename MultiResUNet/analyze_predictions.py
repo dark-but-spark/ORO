@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataloading import create_datasets
+from dataloading import create_datasets, create_single_dataset
 from pytorch.MultiResUNet import predict_prob_with_tta
 from train import create_model
 
@@ -43,6 +43,9 @@ def parse_args():
     parser.add_argument("--output-channels", type=int, default=4)
     parser.add_argument("--dropout-rate", type=float, default=0.2)
     parser.add_argument("--validation-split", type=float, default=0.1)
+    parser.add_argument("--dataset-mode", default="validation", choices=["validation", "single"],
+                        help="validation: old random validation split; single: analyze all files in img-dir/mask-dir")
+    parser.add_argument("--split-name", default="validation", help="Name printed in reports, e.g. validation or test")
     parser.add_argument("--scale", action="store_true", default=True)
     parser.add_argument("--no-scale", action="store_false", dest="scale")
     parser.add_argument("--scale-factor", type=float, default=0.75)
@@ -55,6 +58,7 @@ def parse_args():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--worst-count", type=int, default=50)
     parser.add_argument("--best-count", type=int, default=12)
+    parser.add_argument("--class-worst-count", type=int, default=50)
     parser.add_argument("--class-names", nargs="*", default=None)
     return parser.parse_args()
 
@@ -82,22 +86,34 @@ def build_model(args, device):
 
 
 def make_validation_loader(args):
-    train_ratio = 1.0 - args.validation_split
-    _, val_dataset, _, n_val = create_datasets(
-        img_dir=args.img_dir,
-        mask_dir=args.mask_dir,
-        train_ratio=train_ratio,
-        val_ratio=args.validation_split,
-        limit=args.data_limit,
-        scale=args.scale,
-        scale_factor=args.scale_factor,
-        repeat_factor=1,
-        train_apply_augmentation=False,
-        val_apply_augmentation=False,
-        shuffle=True,
-        seed=args.seed,
-        augmentation_strength="mild",
-    )
+    if args.dataset_mode == "single":
+        val_dataset = create_single_dataset(
+            img_dir=args.img_dir,
+            mask_dir=args.mask_dir,
+            limit=args.data_limit,
+            scale=args.scale,
+            scale_factor=args.scale_factor,
+            apply_augmentation=False,
+            augmentation_strength="mild",
+        )
+        n_val = len(val_dataset)
+    else:
+        train_ratio = 1.0 - args.validation_split
+        _, val_dataset, _, n_val = create_datasets(
+            img_dir=args.img_dir,
+            mask_dir=args.mask_dir,
+            train_ratio=train_ratio,
+            val_ratio=args.validation_split,
+            limit=args.data_limit,
+            scale=args.scale,
+            scale_factor=args.scale_factor,
+            repeat_factor=1,
+            train_apply_augmentation=False,
+            val_apply_augmentation=False,
+            shuffle=True,
+            seed=args.seed,
+            augmentation_strength="mild",
+        )
     loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -229,7 +245,7 @@ def main():
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
     model = build_model(args, device)
     val_dataset, val_loader, n_val = make_validation_loader(args)
-    print(f"Validation samples for analysis: {n_val}")
+    print(f"{args.split_name.capitalize()} samples for analysis: {n_val}")
 
     rows = []
     samples = {}
@@ -291,6 +307,9 @@ def main():
     class_jaccard = np.concatenate(class_jaccard_values, axis=0) if class_jaccard_values else np.empty((0, args.output_channels))
     summary = {
         "model_path": args.model_path,
+        "split_name": args.split_name,
+        "dataset_mode": args.dataset_mode,
+        "samples": len(rows),
         "validation_samples": len(rows),
         "threshold": args.threshold,
         "val_tta": args.val_tta,
@@ -329,6 +348,20 @@ def main():
 
     save_ranked_panels(rows_sorted, samples, out_dir, args.worst_count, "worst_cases")
     save_ranked_panels(list(reversed(rows_sorted)), samples, out_dir, args.best_count, "best_cases")
+    for class_idx, class_name in enumerate(class_names):
+        class_rows = [
+            row for row in rows
+            if float(row.get(f"{class_name}_true_pixels", 0.0)) > 0
+        ]
+        class_rows = sorted(class_rows, key=lambda item: item[f"{class_name}_dice"])
+        if class_rows:
+            save_ranked_panels(
+                class_rows,
+                samples,
+                out_dir,
+                args.class_worst_count,
+                f"class_{class_idx}_{class_name}_worst",
+            )
 
     print(f"Saved CSV report: {csv_path}")
     print(f"Saved summary JSON: {summary_path}")

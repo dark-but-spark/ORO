@@ -1,0 +1,11 @@
+{
+  "img_dir": "E:\\project\\ORO\\data\\385-liver.v1i.yolov8\\valid\\images",
+  "label_dir": "E:\\project\\ORO\\data\\385-liver.v1i.yolov8\\valid\\labels",
+  "output_dir": "E:\\project\\ORO\\data\\385-liver.v1i.yolov8\\valid\\masks",
+  "num_classes": 4,
+  "images": 144,
+  "missing_labels": 0,
+  "invalid_images": 0,
+  "objects": 1184,
+  "skipped_rows": 0
+}

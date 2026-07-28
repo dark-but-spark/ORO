@@ -5,34 +5,40 @@ set -euo pipefail
 #   cd ~/ORO/MultiResUNet
 #   bash ../temp.sh
 #
+# Expected dataset layout, relative to the ORO repo root:
+#   ../data/20260204111923/train/images
+#   ../data/20260204111923/train/masks
+#   ../data/385-liver.v1i.yolov8/train/images
+#   ../data/385-liver.v1i.yolov8/train/masks
+#
 # Optional one-time mask conversion after re-extracting YOLO labels:
 #   RUN_MASK_CONVERT=1 bash ../temp.sh
-#
-# Evaluation policy:
-#   train: data/train
-#   val:   data/valid, used for early stopping and best checkpoint selection
-#   test:  data/test, evaluated once after training
 
 mkdir -p runs/logs
 
+DATA_A="../data/20260204111923"
+DATA_B="../data/385-liver.v1i.yolov8"
+
 if [[ "${RUN_MASK_CONVERT:-0}" == "1" ]]; then
   echo "============================================================"
-  echo "Converting YOLO labels to NPZ masks for train/valid/test"
+  echo "Converting YOLO labels to NPZ masks: ${DATA_A}"
   echo "============================================================"
   python scripts/yolo_to_npz.py \
-    --data-root data \
+    --data-root "${DATA_A}" \
+    --splits train valid test \
+    --num-classes 4
+
+  echo "============================================================"
+  echo "Converting YOLO labels to NPZ masks: ${DATA_B}"
+  echo "============================================================"
+  python scripts/yolo_to_npz.py \
+    --data-root "${DATA_B}" \
     --splits train valid test \
     --num-classes 4
 fi
 
 COMMON_ARGS=(
   --split-mode fixed
-  --train-img-dir data/train/images
-  --train-mask-dir data/train/masks
-  --val-img-dir data/valid/images
-  --val-mask-dir data/valid/masks
-  --test-img-dir data/test/images
-  --test-mask-dir data/test/masks
   --scale
   --scale-factor 0.75
   --input-channels 3
@@ -72,15 +78,23 @@ COMMON_ARGS=(
 
 run_exp() {
   local name="$1"
-  shift
+  local data_root="$2"
+  shift 2
   local log_file="runs/logs/run_${name}.log"
 
   echo "============================================================"
   echo "Starting ${name}"
+  echo "Dataset: ${data_root}"
   echo "Log: ${log_file}"
   echo "============================================================"
 
   python train.py "${COMMON_ARGS[@]}" "$@" \
+    --train-img-dir "${data_root}/train/images" \
+    --train-mask-dir "${data_root}/train/masks" \
+    --val-img-dir "${data_root}/valid/images" \
+    --val-mask-dir "${data_root}/valid/masks" \
+    --test-img-dir "${data_root}/test/images" \
+    --test-mask-dir "${data_root}/test/masks" \
     --save-dir "models/${name}" \
     --log-dir "runs/logs/${name}" \
     > "${log_file}" 2>&1
@@ -89,46 +103,24 @@ run_exp() {
   echo
 }
 
-# Current fixed-split winner. Rerun as the new anchor only if you need a clean
-# comparison in the same batch.
-run_exp "S_fixed_cls2w05_anchor" \
-  --class-weights 1 1 0.5 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1
+# A source: 20260204111923. Larger valid/test split, better for judging generalization.
+run_exp "U_A_20260204_anchor_scale075_cls2w10" "${DATA_A}" \
+  --class-weights 1 1 1 1
 
-# Check whether class2 oversampling is worsening overfit on the fixed valid/test.
-run_exp "S_fixed_cls2w05_no_os" \
-  --class-weights 1 1 0.5 1
+# B source: 385-liver.v1i.yolov8. Smaller valid/test split, mainly checks source-specific behavior.
+run_exp "U_B_385liver_anchor_scale075_cls2w10" "${DATA_B}" \
+  --class-weights 1 1 1 1
 
-# Full resolution probe. Use smaller batch to stay within memory.
-run_exp "S_fixed_cls2w05_scale10" \
+# A full-resolution probe. If A improves clearly, resolution is useful on the cleaner/larger source.
+run_exp "U_A_20260204_fullres_cls2w10" "${DATA_A}" \
   --scale-factor 1.0 \
   --batch-size 8 \
-  --class-weights 1 1 0.5 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1
+  --class-weights 1 1 1 1
 
-# Stronger regularization for the large train/valid gap.
-run_exp "S_fixed_cls2w05_reg" \
-  --dropout-rate 0.4 \
-  --weight-decay 5e-4 \
-  --class-weights 1 1 0.5 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1
+# B full-resolution probe. This is risky because B test is small, but it checks whether detail helps this source.
+run_exp "U_B_385liver_fullres_cls2w10" "${DATA_B}" \
+  --scale-factor 1.0 \
+  --batch-size 8 \
+  --class-weights 1 1 1 1
 
-# Mild -> moderate curriculum may improve fixed-test robustness without jumping to strong aug.
-run_exp "S_fixed_cls2w05_curr_l04" \
-  --augmentation-curriculum cosine \
-  --curriculum-start-epoch 30 \
-  --curriculum-ramp-epochs 35 \
-  --curriculum-max-aug-level 0.4 \
-  --curriculum-target-strength moderate \
-  --class-weights 1 1 0.5 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1
-
-echo "Fixed train/valid/test diagnostic training completed."
+echo "Separate-source fixed train/valid/test runs completed."

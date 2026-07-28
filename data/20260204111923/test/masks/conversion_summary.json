@@ -1,0 +1,11 @@
+{
+  "img_dir": "E:\\project\\ORO\\data\\20260204111923\\test\\images",
+  "label_dir": "E:\\project\\ORO\\data\\20260204111923\\test\\labels",
+  "output_dir": "E:\\project\\ORO\\data\\20260204111923\\test\\masks",
+  "num_classes": 4,
+  "images": 400,
+  "missing_labels": 0,
+  "invalid_images": 0,
+  "objects": 990,
+  "skipped_rows": 0
+}
