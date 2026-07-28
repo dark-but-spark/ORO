@@ -89,16 +89,46 @@ run_exp() {
   echo
 }
 
-run_exp "R_fixed_smp_resnet34_scale075_cls2w125" \
-  --class-weights 1 1 1.25 1 \
-  --oversample-class-indices 2 \
-  --oversample-factor 1.5 \
-  --oversample-min-pixels 1
-
-run_exp "R_fixed_smp_resnet34_scale075_cls2w05" \
+# Current fixed-split winner. Rerun as the new anchor only if you need a clean
+# comparison in the same batch.
+run_exp "S_fixed_cls2w05_anchor" \
   --class-weights 1 1 0.5 1 \
   --oversample-class-indices 2 \
   --oversample-factor 1.5 \
   --oversample-min-pixels 1
 
-echo "Fixed train/valid/test training completed."
+# Check whether class2 oversampling is worsening overfit on the fixed valid/test.
+run_exp "S_fixed_cls2w05_no_os" \
+  --class-weights 1 1 0.5 1
+
+# Full resolution probe. Use smaller batch to stay within memory.
+run_exp "S_fixed_cls2w05_scale10" \
+  --scale-factor 1.0 \
+  --batch-size 8 \
+  --class-weights 1 1 0.5 1 \
+  --oversample-class-indices 2 \
+  --oversample-factor 1.5 \
+  --oversample-min-pixels 1
+
+# Stronger regularization for the large train/valid gap.
+run_exp "S_fixed_cls2w05_reg" \
+  --dropout-rate 0.4 \
+  --weight-decay 5e-4 \
+  --class-weights 1 1 0.5 1 \
+  --oversample-class-indices 2 \
+  --oversample-factor 1.5 \
+  --oversample-min-pixels 1
+
+# Mild -> moderate curriculum may improve fixed-test robustness without jumping to strong aug.
+run_exp "S_fixed_cls2w05_curr_l04" \
+  --augmentation-curriculum cosine \
+  --curriculum-start-epoch 30 \
+  --curriculum-ramp-epochs 35 \
+  --curriculum-max-aug-level 0.4 \
+  --curriculum-target-strength moderate \
+  --class-weights 1 1 0.5 1 \
+  --oversample-class-indices 2 \
+  --oversample-factor 1.5 \
+  --oversample-min-pixels 1
+
+echo "Fixed train/valid/test diagnostic training completed."
