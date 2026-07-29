@@ -5,39 +5,46 @@ set -euo pipefail
 #   cd ~/ORO/MultiResUNet
 #   bash ../temp.sh
 #
-# Expected dataset layout, relative to the ORO repo root:
-#   ../data/20260204111923/train/images
-#   ../data/20260204111923/train/masks
-#   ../data/385-liver.v1i.yolov8/train/images
-#   ../data/385-liver.v1i.yolov8/train/masks
-#
-# Optional one-time mask conversion after re-extracting YOLO labels:
-#   RUN_MASK_CONVERT=1 bash ../temp.sh
+# Purpose:
+#   1. Create B_clean if needed, using group-safe Roboflow splitting.
+#   2. Train one B_clean anchor model.
+#   3. Evaluate B_clean model on A test.
+#   4. Evaluate existing A models on B_clean test for cross-source comparison.
 
-mkdir -p runs/logs
+mkdir -p runs/logs runs/debug_eval
 
 DATA_A="../data/20260204111923"
-DATA_B="../data/385-liver.v1i.yolov8"
+DATA_B_RAW="../data/385-liver.v1i.yolov8"
+DATA_B_CLEAN="../data/385-liver.groupclean.v1"
 
-if [[ "${RUN_MASK_CONVERT:-0}" == "1" ]]; then
+B_CLEAN_NAME="V_Bclean_anchor_scale075_cls2w10"
+
+ensure_b_clean() {
+  if [[ -d "${DATA_B_CLEAN}/train/images" && -d "${DATA_B_CLEAN}/train/masks" ]]; then
+    echo "B_clean dataset already exists: ${DATA_B_CLEAN}"
+    return
+  fi
+
   echo "============================================================"
-  echo "Converting YOLO labels to NPZ masks: ${DATA_A}"
+  echo "Creating leakage-safe B_clean dataset"
+  echo "Source: ${DATA_B_RAW}"
+  echo "Output: ${DATA_B_CLEAN}"
   echo "============================================================"
-  python scripts/yolo_to_npz.py \
-    --data-root "${DATA_A}" \
-    --splits train valid test \
+
+  python scripts/group_split_roboflow_dataset.py \
+    --source-root "${DATA_B_RAW}" \
+    --output-root "${DATA_B_CLEAN}" \
+    --train-ratio 0.8 \
+    --val-ratio 0.1 \
+    --test-ratio 0.1 \
+    --seed 42 \
+    --max-variants-per-group 3 \
+    --copy-mode hardlink \
+    --convert-masks \
     --num-classes 4
+}
 
-  echo "============================================================"
-  echo "Converting YOLO labels to NPZ masks: ${DATA_B}"
-  echo "============================================================"
-  python scripts/yolo_to_npz.py \
-    --data-root "${DATA_B}" \
-    --splits train valid test \
-    --num-classes 4
-fi
-
-COMMON_ARGS=(
+COMMON_TRAIN_ARGS=(
   --split-mode fixed
   --scale
   --scale-factor 0.75
@@ -76,51 +83,85 @@ COMMON_ARGS=(
   --seed 42
 )
 
-run_exp() {
-  local name="$1"
-  local data_root="$2"
-  shift 2
+train_b_clean() {
+  local name="${B_CLEAN_NAME}"
   local log_file="runs/logs/run_${name}.log"
 
   echo "============================================================"
-  echo "Starting ${name}"
-  echo "Dataset: ${data_root}"
+  echo "Training ${name}"
+  echo "Dataset: ${DATA_B_CLEAN}"
   echo "Log: ${log_file}"
   echo "============================================================"
 
-  python train.py "${COMMON_ARGS[@]}" "$@" \
-    --train-img-dir "${data_root}/train/images" \
-    --train-mask-dir "${data_root}/train/masks" \
-    --val-img-dir "${data_root}/valid/images" \
-    --val-mask-dir "${data_root}/valid/masks" \
-    --test-img-dir "${data_root}/test/images" \
-    --test-mask-dir "${data_root}/test/masks" \
+  python train.py "${COMMON_TRAIN_ARGS[@]}" \
+    --train-img-dir "${DATA_B_CLEAN}/train/images" \
+    --train-mask-dir "${DATA_B_CLEAN}/train/masks" \
+    --val-img-dir "${DATA_B_CLEAN}/valid/images" \
+    --val-mask-dir "${DATA_B_CLEAN}/valid/masks" \
+    --test-img-dir "${DATA_B_CLEAN}/test/images" \
+    --test-mask-dir "${DATA_B_CLEAN}/test/masks" \
+    --class-weights 1 1 1 1 \
     --save-dir "models/${name}" \
     --log-dir "runs/logs/${name}" \
     > "${log_file}" 2>&1
 
   echo "Finished ${name}"
-  echo
 }
 
-# A source: 20260204111923. Larger valid/test split, better for judging generalization.
-run_exp "U_A_20260204_anchor_scale075_cls2w10" "${DATA_A}" \
-  --class-weights 1 1 1 1
+collect_runs() {
+  local pattern="$1"
+  mapfile -t FOUND_RUNS < <(find runs -maxdepth 1 -type d -name "${pattern}" | sort)
+  if [[ "${#FOUND_RUNS[@]}" -eq 0 ]]; then
+    echo "ERROR: no runs matched pattern: ${pattern}" >&2
+    exit 1
+  fi
+}
 
-# B source: 385-liver.v1i.yolov8. Smaller valid/test split, mainly checks source-specific behavior.
-run_exp "U_B_385liver_anchor_scale075_cls2w10" "${DATA_B}" \
-  --class-weights 1 1 1 1
+evaluate_group() {
+  local label="$1"
+  local test_root="$2"
+  shift 2
+  local output_prefix="runs/debug_eval/${label}"
 
-# A full-resolution probe. If A improves clearly, resolution is useful on the cleaner/larger source.
-run_exp "U_A_20260204_fullres_cls2w10" "${DATA_A}" \
-  --scale-factor 1.0 \
-  --batch-size 8 \
-  --class-weights 1 1 1 1
+  echo "============================================================"
+  echo "Evaluating ${label}"
+  echo "Test root: ${test_root}"
+  echo "Run roots: $*"
+  echo "============================================================"
 
-# B full-resolution probe. This is risky because B test is small, but it checks whether detail helps this source.
-run_exp "U_B_385liver_fullres_cls2w10" "${DATA_B}" \
-  --scale-factor 1.0 \
-  --batch-size 8 \
-  --class-weights 1 1 1 1
+  python scripts/evaluate_history_on_test.py \
+    --run-roots "$@" \
+    --test-img-dir "${test_root}/test/images" \
+    --test-mask-dir "${test_root}/test/masks" \
+    --output-csv "${output_prefix}.csv" \
+    --output-json "${output_prefix}.json" \
+    --device cuda \
+    --batch-size 8 \
+    --num-workers 4 \
+    --threshold 0.5 \
+    --tta none \
+    --metric-ignore-classes 2 \
+    --default-encoder-weights none
+}
 
-echo "Separate-source fixed train/valid/test runs completed."
+ensure_b_clean
+train_b_clean
+
+collect_runs "${B_CLEAN_NAME}_*"
+B_CLEAN_RUNS=("${FOUND_RUNS[@]}")
+
+evaluate_group "own_Bclean_model_on_Bclean_test" "${DATA_B_CLEAN}" "${B_CLEAN_RUNS[@]}"
+evaluate_group "cross_Bclean_model_on_A_test" "${DATA_A}" "${B_CLEAN_RUNS[@]}"
+
+if find runs -maxdepth 1 -type d -name "U_A_*" | grep -q .; then
+  collect_runs "U_A_*"
+  A_RUNS=("${FOUND_RUNS[@]}")
+  evaluate_group "cross_A_models_on_Bclean_test" "${DATA_B_CLEAN}" "${A_RUNS[@]}"
+else
+  echo "No U_A_* runs found. Skipping A models on B_clean test."
+fi
+
+echo "B_clean training and cross-source evaluation completed."
+echo "Outputs:"
+echo "  Training log: runs/logs/run_${B_CLEAN_NAME}.log"
+echo "  Eval CSV/JSON: runs/debug_eval"
