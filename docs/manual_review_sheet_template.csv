@@ -1,0 +1,5 @@
+dataset,split,image_file,case_id,gt_reliable,error_type,affected_class,label_issue,action,severity,ambiguous,second_review,reviewer,review_date,notes
+A,valid,,,,,,,,,,,,,
+A,test,,,,,,,,,,,,,
+B_clean,valid,,,,,,,,,,,,,
+B_clean,test,,,,,,,,,,,,,

@@ -1,5 +1,6 @@
 import argparse
 import csv
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -29,6 +30,15 @@ def parse_args():
         default=["runs", "runsTemp/runsABCtest/logs"],
         help="Directories recursively scanned for models/best_model.pth.",
     )
+    parser.add_argument(
+        "--include-run-pattern",
+        action="append",
+        default=[],
+        help=(
+            "Optional shell-style pattern matched against the run directory name. "
+            "Repeat for multiple patterns, e.g. --include-run-pattern 'Y_*'."
+        ),
+    )
     parser.add_argument("--test-img-dir", default="data/test/images")
     parser.add_argument("--test-mask-dir", default="data/test/masks")
     parser.add_argument("--output-csv", default="runs/history_test_evaluation.csv")
@@ -44,6 +54,11 @@ def parse_args():
     parser.add_argument("--scale-factor", type=float, default=None, help="Override checkpoint config scale_factor.")
     parser.add_argument("--input-channels", type=int, default=None)
     parser.add_argument("--output-channels", type=int, default=None)
+    parser.add_argument(
+        "--encoder-weights",
+        default=None,
+        help="Override checkpoint config encoder_weights for model construction, e.g. none to avoid downloads.",
+    )
     parser.add_argument("--default-model-architecture", default="smp_unet", choices=["multiresunet", "smp_unet"])
     parser.add_argument("--default-encoder-name", default="resnet34")
     parser.add_argument("--default-encoder-weights", default="imagenet")
@@ -61,9 +76,10 @@ def read_json(path):
         return {}
 
 
-def discover_checkpoints(run_roots):
+def discover_checkpoints(run_roots, include_run_patterns=None):
     checkpoints = []
     seen = set()
+    include_run_patterns = include_run_patterns or []
     for root in run_roots:
         root_path = Path(root)
         if not root_path.exists():
@@ -74,6 +90,10 @@ def discover_checkpoints(run_roots):
                 continue
             seen.add(resolved)
             run_dir = ckpt.parent.parent if ckpt.parent.name == "models" else ckpt.parent
+            if include_run_patterns and not any(
+                fnmatch.fnmatch(run_dir.name, pattern) for pattern in include_run_patterns
+            ):
+                continue
             checkpoints.append((run_dir, ckpt))
     return sorted(checkpoints, key=lambda item: str(item[0]))
 
@@ -89,10 +109,13 @@ def config_value(config, args, key, default):
 
 
 def make_model_args(config, args):
+    encoder_weights = args.encoder_weights
+    if encoder_weights is None:
+        encoder_weights = config.get("encoder_weights", args.default_encoder_weights)
     return SimpleNamespace(
         model_architecture=config.get("model_architecture", args.default_model_architecture),
         encoder_name=config.get("encoder_name", args.default_encoder_name),
-        encoder_weights=config.get("encoder_weights", args.default_encoder_weights),
+        encoder_weights=encoder_weights,
         input_channels=int(config_value(config, args, "input_channels", 3)),
         output_channels=int(config_value(config, args, "output_channels", 4)),
         dropout_rate=float(config.get("dropout_rate", 0.2)),
@@ -264,7 +287,7 @@ def write_outputs(rows, output_csv, output_json):
 def main():
     args = parse_args()
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
-    checkpoints = discover_checkpoints(args.run_roots)
+    checkpoints = discover_checkpoints(args.run_roots, args.include_run_pattern)
     print(f"Discovered checkpoints: {len(checkpoints)}")
     for run_dir, ckpt in checkpoints:
         print(f"  {run_dir.name}: {ckpt}")

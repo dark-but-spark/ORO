@@ -1,0 +1,4 @@
+section,value,count
+prediction_medically_plausible,N,33
+prediction_medically_plausible,Y,15
+prediction_medically_plausible,<blank>,1

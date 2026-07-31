@@ -1,0 +1,1096 @@
+nohup: ignoring input
+============================================================
+MultiResUNet Training Configuration
+============================================================
+Data Limit: None samples
+Validation Split: 10.0%
+Scale Enabled: True
+Scale Factor: 0.75 (75%)
+Input Channels: 3
+Output Channels: 4
+Model Architecture: multiresunet
+Epochs: 120
+Batch Size: 16
+Learning Rate: 2e-05
+Gradient Clipping: 0.5
+Weight Decay: 0.0002
+Device: cuda
+Debug Mode: False
+Data Validation: False
+TensorBoard: True
+Log Directory: runs/logs/C_scale075_l04_cls2w125_os15
+TensorBoard Image Interval: 5
+TensorBoard Image Samples: 4
+Num Workers: 4
+Prefetch Factor: 2
+Repeat Factor: 1
+Oversample Classes: [2]
+Oversample Factor: 1.5
+Train Augmentation: True
+Validation Augmentation: False
+Augmentation Strength: mild
+Augmentation Curriculum: cosine
+Curriculum: start=E40, ramp=35, max_level=0.4, target=moderate
+Early Stopping Patience: 20
+Early Stopping Min Delta: 0.0
+Early Stopping Min Epochs: 90
+Class Weights: [1.0, 1.0, 1.25, 1.0]
+Dropout Rate: 0.2
+Validation TTA: none
+Random Seed: 42
+============================================================
+Using device: cuda
+GPU Memory: 47.7 GB
+
+
+TensorBoard logs will be saved to: runs/logs/C_scale075_l04_cls2w125_os15
+
+Loading data...
+Using memory-efficient dataset loading (recommended for large datasets)...
+Class oversampling: classes=[2], factor=1.5, matched=1556, training samples after oversampling=7933
+Total samples: 7950
+Training samples: 7155
+Validation samples: 795
+  Scale factor: 75%
+Effective training samples: 7933
+Dataset created with 7933 samples
+  Scale enabled: 75%
+  Augmentation: Enabled
+  Augmentation strength: mild
+Dataset created with 795 samples
+  Scale enabled: 75%
+  Augmentation: Disabled
+✓ Training samples: 7933
+✓ Validation samples: 795
+✓ Memory usage: Minimal (data loaded batch-by-batch)
+✓ Optimized DataLoader config:
+  - workers=4 (auto-tuned from 4)
+  - prefetch=2
+  - persistent_workers=False (memory-safe)
+  - pin_memory=True (GPU transfer optimization)
+
+Initializing model...
+Model architecture: MultiResUNet
+  Input: 3 channels
+  Output: 4 channels
+
+Starting training...
+------------------------------------------------------------
+
+Using Combined Loss (BCE/Focal + Dice)
+  BCE/Focal weight: 0.7
+  Dice weight: 0.3
+  Class weights: [1.0, 1.0, 1.25, 1.0]
+Training config saved to 'runs/logs/C_scale075_l04_cls2w125_os15/config.json'
+
+✓ TensorBoard logging enabled at: runs/logs/C_scale075_l04_cls2w125_os15
+  ✓ Configuration recorded
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.1543 (epoch 1)
+
+Epoch [1/120], Loss: 0.8085
+Average Dice Coefficient: 0.0874
+Average Jaccard Index: 0.0475
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.1543, Jaccard: 0.0878
+  Validation Loss: 0.7749, Dice Gap: -0.0669
+  Best Validation Dice: 0.1543 (epoch 1)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.2829 (epoch 2)
+
+Epoch [2/120], Loss: 0.7801
+Average Dice Coefficient: 0.1578
+Average Jaccard Index: 0.0906
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.2829, Jaccard: 0.1750
+  Validation Loss: 0.7693, Dice Gap: -0.1251
+  Best Validation Dice: 0.2829 (epoch 2)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.3646 (epoch 3)
+
+Epoch [3/120], Loss: 0.7694
+Average Dice Coefficient: 0.2079
+Average Jaccard Index: 0.1241
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.3646, Jaccard: 0.2409
+  Validation Loss: 0.7536, Dice Gap: -0.1567
+  Best Validation Dice: 0.3646 (epoch 3)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.4076 (epoch 4)
+
+Epoch [4/120], Loss: 0.7617
+Average Dice Coefficient: 0.2470
+Average Jaccard Index: 0.1515
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4076, Jaccard: 0.2763
+  Validation Loss: 0.7442, Dice Gap: -0.1606
+  Best Validation Dice: 0.4076 (epoch 4)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.4168 (epoch 5)
+
+Epoch [5/120], Loss: 0.7552
+Average Dice Coefficient: 0.2717
+Average Jaccard Index: 0.1691
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4168, Jaccard: 0.2844
+  Validation Loss: 0.7473, Dice Gap: -0.1452
+  Best Validation Dice: 0.4168 (epoch 5)
+  Patience Counter: 0/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.4377 (epoch 6)
+
+Epoch [6/120], Loss: 0.7491
+Average Dice Coefficient: 0.2983
+Average Jaccard Index: 0.1891
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4377, Jaccard: 0.3029
+  Validation Loss: 0.7349, Dice Gap: -0.1395
+  Best Validation Dice: 0.4377 (epoch 6)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.4762 (epoch 7)
+
+Epoch [7/120], Loss: 0.7445
+Average Dice Coefficient: 0.3208
+Average Jaccard Index: 0.2058
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4762, Jaccard: 0.3416
+  Validation Loss: 0.7254, Dice Gap: -0.1553
+  Best Validation Dice: 0.4762 (epoch 7)
+  Patience Counter: 0/20
+
+Epoch [8/120], Loss: 0.7398
+Average Dice Coefficient: 0.3382
+Average Jaccard Index: 0.2191
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4710, Jaccard: 0.3335
+  Validation Loss: 0.7292, Dice Gap: -0.1328
+  Best Validation Dice: 0.4762 (epoch 7)
+  Patience Counter: 1/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.4979 (epoch 9)
+
+Epoch [9/120], Loss: 0.7353
+Average Dice Coefficient: 0.3556
+Average Jaccard Index: 0.2330
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.4979, Jaccard: 0.3588
+  Validation Loss: 0.7233, Dice Gap: -0.1424
+  Best Validation Dice: 0.4979 (epoch 9)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5384 (epoch 10)
+
+Epoch [10/120], Loss: 0.7309
+Average Dice Coefficient: 0.3699
+Average Jaccard Index: 0.2446
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5384, Jaccard: 0.3969
+  Validation Loss: 0.7183, Dice Gap: -0.1685
+  Best Validation Dice: 0.5384 (epoch 10)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_10.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5414 (epoch 11)
+
+Epoch [11/120], Loss: 0.7266
+Average Dice Coefficient: 0.3845
+Average Jaccard Index: 0.2568
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5414, Jaccard: 0.3999
+  Validation Loss: 0.7118, Dice Gap: -0.1569
+  Best Validation Dice: 0.5414 (epoch 11)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5438 (epoch 12)
+
+Epoch [12/120], Loss: 0.7232
+Average Dice Coefficient: 0.3962
+Average Jaccard Index: 0.2669
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5438, Jaccard: 0.4028
+  Validation Loss: 0.7132, Dice Gap: -0.1476
+  Best Validation Dice: 0.5438 (epoch 12)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5749 (epoch 13)
+
+Epoch [13/120], Loss: 0.7186
+Average Dice Coefficient: 0.4093
+Average Jaccard Index: 0.2778
+  Current learning rate: 0.000020
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5749, Jaccard: 0.4360
+  Validation Loss: 0.7010, Dice Gap: -0.1655
+  Best Validation Dice: 0.5749 (epoch 13)
+  Patience Counter: 0/20
+
+Epoch [14/120], Loss: 0.7150
+Average Dice Coefficient: 0.4213
+Average Jaccard Index: 0.2884
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5559, Jaccard: 0.4170
+  Validation Loss: 0.7014, Dice Gap: -0.1346
+  Best Validation Dice: 0.5749 (epoch 13)
+  Patience Counter: 1/20
+
+Epoch [15/120], Loss: 0.7108
+Average Dice Coefficient: 0.4318
+Average Jaccard Index: 0.2976
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5488, Jaccard: 0.4078
+  Validation Loss: 0.6997, Dice Gap: -0.1170
+  Best Validation Dice: 0.5749 (epoch 13)
+  Patience Counter: 2/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5793 (epoch 16)
+
+Epoch [16/120], Loss: 0.7072
+Average Dice Coefficient: 0.4381
+Average Jaccard Index: 0.3035
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5793, Jaccard: 0.4401
+  Validation Loss: 0.6954, Dice Gap: -0.1411
+  Best Validation Dice: 0.5793 (epoch 16)
+  Patience Counter: 0/20
+
+Epoch [17/120], Loss: 0.7040
+Average Dice Coefficient: 0.4490
+Average Jaccard Index: 0.3132
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5721, Jaccard: 0.4322
+  Validation Loss: 0.6960, Dice Gap: -0.1231
+  Best Validation Dice: 0.5793 (epoch 16)
+  Patience Counter: 1/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.5803 (epoch 18)
+
+Epoch [18/120], Loss: 0.7003
+Average Dice Coefficient: 0.4578
+Average Jaccard Index: 0.3214
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5803, Jaccard: 0.4405
+  Validation Loss: 0.6879, Dice Gap: -0.1226
+  Best Validation Dice: 0.5803 (epoch 18)
+  Patience Counter: 0/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.6067 (epoch 19)
+
+Epoch [19/120], Loss: 0.6965
+Average Dice Coefficient: 0.4657
+Average Jaccard Index: 0.3287
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6067, Jaccard: 0.4689
+  Validation Loss: 0.6860, Dice Gap: -0.1410
+  Best Validation Dice: 0.6067 (epoch 19)
+  Patience Counter: 0/20
+
+Epoch [20/120], Loss: 0.6929
+Average Dice Coefficient: 0.4765
+Average Jaccard Index: 0.3389
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5735, Jaccard: 0.4357
+  Validation Loss: 0.6871, Dice Gap: -0.0970
+  Best Validation Dice: 0.6067 (epoch 19)
+  Patience Counter: 1/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_20.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [21/120], Loss: 0.6891
+Average Dice Coefficient: 0.4844
+Average Jaccard Index: 0.3470
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5892, Jaccard: 0.4513
+  Validation Loss: 0.6791, Dice Gap: -0.1048
+  Best Validation Dice: 0.6067 (epoch 19)
+  Patience Counter: 2/20
+
+Epoch [22/120], Loss: 0.6862
+Average Dice Coefficient: 0.4941
+Average Jaccard Index: 0.3558
+  Current learning rate: 0.000019
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5732, Jaccard: 0.4315
+  Validation Loss: 0.6853, Dice Gap: -0.0791
+  Best Validation Dice: 0.6067 (epoch 19)
+  Patience Counter: 3/20
+
+Epoch [23/120], Loss: 0.6828
+Average Dice Coefficient: 0.4986
+Average Jaccard Index: 0.3607
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5773, Jaccard: 0.4367
+  Validation Loss: 0.6782, Dice Gap: -0.0787
+  Best Validation Dice: 0.6067 (epoch 19)
+  Patience Counter: 4/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.6119 (epoch 24)
+
+Epoch [24/120], Loss: 0.6798
+Average Dice Coefficient: 0.5058
+Average Jaccard Index: 0.3683
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6119, Jaccard: 0.4769
+  Validation Loss: 0.6680, Dice Gap: -0.1061
+  Best Validation Dice: 0.6119 (epoch 24)
+  Patience Counter: 0/20
+
+Epoch [25/120], Loss: 0.6768
+Average Dice Coefficient: 0.5149
+Average Jaccard Index: 0.3771
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5925, Jaccard: 0.4526
+  Validation Loss: 0.6678, Dice Gap: -0.0776
+  Best Validation Dice: 0.6119 (epoch 24)
+  Patience Counter: 1/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [26/120], Loss: 0.6735
+Average Dice Coefficient: 0.5202
+Average Jaccard Index: 0.3821
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6035, Jaccard: 0.4671
+  Validation Loss: 0.6651, Dice Gap: -0.0833
+  Best Validation Dice: 0.6119 (epoch 24)
+  Patience Counter: 2/20
+
+Epoch [27/120], Loss: 0.6702
+Average Dice Coefficient: 0.5284
+Average Jaccard Index: 0.3905
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5979, Jaccard: 0.4610
+  Validation Loss: 0.6587, Dice Gap: -0.0695
+  Best Validation Dice: 0.6119 (epoch 24)
+  Patience Counter: 3/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.6219 (epoch 28)
+
+Epoch [28/120], Loss: 0.6670
+Average Dice Coefficient: 0.5362
+Average Jaccard Index: 0.3988
+  Current learning rate: 0.000018
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6219, Jaccard: 0.4890
+  Validation Loss: 0.6540, Dice Gap: -0.0857
+  Best Validation Dice: 0.6219 (epoch 28)
+  Patience Counter: 0/20
+
+Epoch [29/120], Loss: 0.6638
+Average Dice Coefficient: 0.5398
+Average Jaccard Index: 0.4020
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.5910, Jaccard: 0.4529
+  Validation Loss: 0.6599, Dice Gap: -0.0512
+  Best Validation Dice: 0.6219 (epoch 28)
+  Patience Counter: 1/20
+
+Epoch [30/120], Loss: 0.6614
+Average Dice Coefficient: 0.5474
+Average Jaccard Index: 0.4101
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6177, Jaccard: 0.4821
+  Validation Loss: 0.6579, Dice Gap: -0.0702
+  Best Validation Dice: 0.6219 (epoch 28)
+  Patience Counter: 2/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_30.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.6338 (epoch 31)
+
+Epoch [31/120], Loss: 0.6580
+Average Dice Coefficient: 0.5569
+Average Jaccard Index: 0.4191
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6338, Jaccard: 0.5035
+  Validation Loss: 0.6448, Dice Gap: -0.0769
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 0/20
+
+Epoch [32/120], Loss: 0.6551
+Average Dice Coefficient: 0.5616
+Average Jaccard Index: 0.4243
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6143, Jaccard: 0.4790
+  Validation Loss: 0.6477, Dice Gap: -0.0527
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 1/20
+
+Epoch [33/120], Loss: 0.6528
+Average Dice Coefficient: 0.5634
+Average Jaccard Index: 0.4263
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6213, Jaccard: 0.4867
+  Validation Loss: 0.6469, Dice Gap: -0.0579
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 2/20
+
+Epoch [34/120], Loss: 0.6494
+Average Dice Coefficient: 0.5723
+Average Jaccard Index: 0.4363
+  Current learning rate: 0.000017
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6196, Jaccard: 0.4874
+  Validation Loss: 0.6442, Dice Gap: -0.0473
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 3/20
+
+Epoch [35/120], Loss: 0.6470
+Average Dice Coefficient: 0.5741
+Average Jaccard Index: 0.4378
+  Current learning rate: 0.000016
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6191, Jaccard: 0.4822
+  Validation Loss: 0.6469, Dice Gap: -0.0450
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 4/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [36/120], Loss: 0.6442
+Average Dice Coefficient: 0.5812
+Average Jaccard Index: 0.4451
+  Current learning rate: 0.000016
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6336, Jaccard: 0.5022
+  Validation Loss: 0.6385, Dice Gap: -0.0523
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 5/20
+
+Epoch [37/120], Loss: 0.6419
+Average Dice Coefficient: 0.5842
+Average Jaccard Index: 0.4486
+  Current learning rate: 0.000016
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6221, Jaccard: 0.4889
+  Validation Loss: 0.6387, Dice Gap: -0.0379
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 6/20
+
+Epoch [38/120], Loss: 0.6389
+Average Dice Coefficient: 0.5893
+Average Jaccard Index: 0.4534
+  Current learning rate: 0.000016
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6202, Jaccard: 0.4862
+  Validation Loss: 0.6446, Dice Gap: -0.0310
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 7/20
+
+Epoch [39/120], Loss: 0.6370
+Average Dice Coefficient: 0.5921
+Average Jaccard Index: 0.4571
+  Current learning rate: 0.000015
+  Augmentation curriculum: cosine, level=0.000, target_profile=moderate
+  Validation Dice: 0.6279, Jaccard: 0.4967
+  Validation Loss: 0.6323, Dice Gap: -0.0359
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 8/20
+
+Epoch [40/120], Loss: 0.6339
+Average Dice Coefficient: 0.5976
+Average Jaccard Index: 0.4624
+  Current learning rate: 0.000015
+  Augmentation curriculum: cosine, level=0.001, target_profile=moderate
+  Validation Dice: 0.6208, Jaccard: 0.4876
+  Validation Loss: 0.6279, Dice Gap: -0.0233
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 9/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_40.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [41/120], Loss: 0.6310
+Average Dice Coefficient: 0.6051
+Average Jaccard Index: 0.4703
+  Current learning rate: 0.000015
+  Augmentation curriculum: cosine, level=0.003, target_profile=moderate
+  Validation Dice: 0.6009, Jaccard: 0.4659
+  Validation Loss: 0.6366, Dice Gap: +0.0042
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 10/20
+
+Epoch [42/120], Loss: 0.6291
+Average Dice Coefficient: 0.6095
+Average Jaccard Index: 0.4754
+  Current learning rate: 0.000015
+  Augmentation curriculum: cosine, level=0.007, target_profile=moderate
+  Validation Dice: 0.6163, Jaccard: 0.4807
+  Validation Loss: 0.6264, Dice Gap: -0.0068
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 11/20
+
+Epoch [43/120], Loss: 0.6265
+Average Dice Coefficient: 0.6114
+Average Jaccard Index: 0.4771
+  Current learning rate: 0.000015
+  Augmentation curriculum: cosine, level=0.013, target_profile=moderate
+  Validation Dice: 0.6236, Jaccard: 0.4916
+  Validation Loss: 0.6227, Dice Gap: -0.0122
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 12/20
+
+Epoch [44/120], Loss: 0.6243
+Average Dice Coefficient: 0.6139
+Average Jaccard Index: 0.4803
+  Current learning rate: 0.000014
+  Augmentation curriculum: cosine, level=0.020, target_profile=moderate
+  Validation Dice: 0.6138, Jaccard: 0.4804
+  Validation Loss: 0.6227, Dice Gap: +0.0001
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 13/20
+
+Epoch [45/120], Loss: 0.6223
+Average Dice Coefficient: 0.6175
+Average Jaccard Index: 0.4840
+  Current learning rate: 0.000014
+  Augmentation curriculum: cosine, level=0.028, target_profile=moderate
+  Validation Dice: 0.6294, Jaccard: 0.4979
+  Validation Loss: 0.6264, Dice Gap: -0.0119
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 14/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [46/120], Loss: 0.6201
+Average Dice Coefficient: 0.6208
+Average Jaccard Index: 0.4882
+  Current learning rate: 0.000014
+  Augmentation curriculum: cosine, level=0.038, target_profile=moderate
+  Validation Dice: 0.6174, Jaccard: 0.4854
+  Validation Loss: 0.6203, Dice Gap: +0.0034
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 15/20
+
+Epoch [47/120], Loss: 0.6180
+Average Dice Coefficient: 0.6214
+Average Jaccard Index: 0.4885
+  Current learning rate: 0.000014
+  Augmentation curriculum: cosine, level=0.049, target_profile=moderate
+  Validation Dice: 0.6156, Jaccard: 0.4839
+  Validation Loss: 0.6203, Dice Gap: +0.0058
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 16/20
+
+Epoch [48/120], Loss: 0.6158
+Average Dice Coefficient: 0.6254
+Average Jaccard Index: 0.4925
+  Current learning rate: 0.000013
+  Augmentation curriculum: cosine, level=0.062, target_profile=moderate
+  Validation Dice: 0.6237, Jaccard: 0.4910
+  Validation Loss: 0.6219, Dice Gap: +0.0017
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 17/20
+
+Epoch [49/120], Loss: 0.6138
+Average Dice Coefficient: 0.6288
+Average Jaccard Index: 0.4961
+  Current learning rate: 0.000013
+  Augmentation curriculum: cosine, level=0.075, target_profile=moderate
+  Validation Dice: 0.6175, Jaccard: 0.4840
+  Validation Loss: 0.6242, Dice Gap: +0.0113
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 18/20
+
+Epoch [50/120], Loss: 0.6122
+Average Dice Coefficient: 0.6292
+Average Jaccard Index: 0.4971
+  Current learning rate: 0.000013
+  Augmentation curriculum: cosine, level=0.090, target_profile=moderate
+  Validation Dice: 0.6217, Jaccard: 0.4895
+  Validation Loss: 0.6198, Dice Gap: +0.0075
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 19/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_50.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [51/120], Loss: 0.6102
+Average Dice Coefficient: 0.6314
+Average Jaccard Index: 0.4997
+  Current learning rate: 0.000013
+  Augmentation curriculum: cosine, level=0.105, target_profile=moderate
+  Validation Dice: 0.6180, Jaccard: 0.4872
+  Validation Loss: 0.6152, Dice Gap: +0.0134
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 20/20
+
+Epoch [52/120], Loss: 0.6085
+Average Dice Coefficient: 0.6346
+Average Jaccard Index: 0.5026
+  Current learning rate: 0.000012
+  Augmentation curriculum: cosine, level=0.121, target_profile=moderate
+  Validation Dice: 0.6319, Jaccard: 0.5034
+  Validation Loss: 0.6055, Dice Gap: +0.0027
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 21/20
+
+Epoch [53/120], Loss: 0.6060
+Average Dice Coefficient: 0.6371
+Average Jaccard Index: 0.5059
+  Current learning rate: 0.000012
+  Augmentation curriculum: cosine, level=0.138, target_profile=moderate
+  Validation Dice: 0.6254, Jaccard: 0.4920
+  Validation Loss: 0.6156, Dice Gap: +0.0117
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 22/20
+
+Epoch [54/120], Loss: 0.6040
+Average Dice Coefficient: 0.6410
+Average Jaccard Index: 0.5099
+  Current learning rate: 0.000012
+  Augmentation curriculum: cosine, level=0.155, target_profile=moderate
+  Validation Dice: 0.6227, Jaccard: 0.4921
+  Validation Loss: 0.6109, Dice Gap: +0.0183
+  Best Validation Dice: 0.6338 (epoch 31)
+  Patience Counter: 23/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/best_model.pth
+  ✓ New best model saved by val Dice: 0.6342 (epoch 55)
+
+Epoch [55/120], Loss: 0.6028
+Average Dice Coefficient: 0.6406
+Average Jaccard Index: 0.5095
+  Current learning rate: 0.000012
+  Augmentation curriculum: cosine, level=0.173, target_profile=moderate
+  Validation Dice: 0.6342, Jaccard: 0.5027
+  Validation Loss: 0.6119, Dice Gap: +0.0064
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 0/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [56/120], Loss: 0.6011
+Average Dice Coefficient: 0.6405
+Average Jaccard Index: 0.5095
+  Current learning rate: 0.000011
+  Augmentation curriculum: cosine, level=0.191, target_profile=moderate
+  Validation Dice: 0.6328, Jaccard: 0.5030
+  Validation Loss: 0.6089, Dice Gap: +0.0076
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 1/20
+
+Epoch [57/120], Loss: 0.5988
+Average Dice Coefficient: 0.6475
+Average Jaccard Index: 0.5176
+  Current learning rate: 0.000011
+  Augmentation curriculum: cosine, level=0.209, target_profile=moderate
+  Validation Dice: 0.6301, Jaccard: 0.5008
+  Validation Loss: 0.6037, Dice Gap: +0.0174
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 2/20
+
+Epoch [58/120], Loss: 0.5974
+Average Dice Coefficient: 0.6448
+Average Jaccard Index: 0.5149
+  Current learning rate: 0.000011
+  Augmentation curriculum: cosine, level=0.227, target_profile=moderate
+  Validation Dice: 0.6293, Jaccard: 0.5004
+  Validation Loss: 0.6034, Dice Gap: +0.0155
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 3/20
+
+Epoch [59/120], Loss: 0.5956
+Average Dice Coefficient: 0.6499
+Average Jaccard Index: 0.5197
+  Current learning rate: 0.000011
+  Augmentation curriculum: cosine, level=0.245, target_profile=moderate
+  Validation Dice: 0.6286, Jaccard: 0.4994
+  Validation Loss: 0.6040, Dice Gap: +0.0213
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 4/20
+
+Epoch [60/120], Loss: 0.5944
+Average Dice Coefficient: 0.6506
+Average Jaccard Index: 0.5214
+  Current learning rate: 0.000010
+  Augmentation curriculum: cosine, level=0.262, target_profile=moderate
+  Validation Dice: 0.6192, Jaccard: 0.4877
+  Validation Loss: 0.6127, Dice Gap: +0.0314
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 5/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_60.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [61/120], Loss: 0.5927
+Average Dice Coefficient: 0.6532
+Average Jaccard Index: 0.5232
+  Current learning rate: 0.000010
+  Augmentation curriculum: cosine, level=0.279, target_profile=moderate
+  Validation Dice: 0.6212, Jaccard: 0.4898
+  Validation Loss: 0.6055, Dice Gap: +0.0321
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 6/20
+
+Epoch [62/120], Loss: 0.5913
+Average Dice Coefficient: 0.6553
+Average Jaccard Index: 0.5267
+  Current learning rate: 0.000010
+  Augmentation curriculum: cosine, level=0.295, target_profile=moderate
+  Validation Dice: 0.6074, Jaccard: 0.4748
+  Validation Loss: 0.6084, Dice Gap: +0.0479
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 7/20
+
+Epoch [63/120], Loss: 0.5905
+Average Dice Coefficient: 0.6572
+Average Jaccard Index: 0.5284
+  Current learning rate: 0.000010
+  Augmentation curriculum: cosine, level=0.310, target_profile=moderate
+  Validation Dice: 0.6130, Jaccard: 0.4820
+  Validation Loss: 0.6027, Dice Gap: +0.0442
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 8/20
+
+Epoch [64/120], Loss: 0.5891
+Average Dice Coefficient: 0.6551
+Average Jaccard Index: 0.5256
+  Current learning rate: 0.000009
+  Augmentation curriculum: cosine, level=0.325, target_profile=moderate
+  Validation Dice: 0.6316, Jaccard: 0.5032
+  Validation Loss: 0.5989, Dice Gap: +0.0235
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 9/20
+
+Epoch [65/120], Loss: 0.5873
+Average Dice Coefficient: 0.6616
+Average Jaccard Index: 0.5332
+  Current learning rate: 0.000009
+  Augmentation curriculum: cosine, level=0.338, target_profile=moderate
+  Validation Dice: 0.5967, Jaccard: 0.4655
+  Validation Loss: 0.6045, Dice Gap: +0.0649
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 10/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [66/120], Loss: 0.5863
+Average Dice Coefficient: 0.6597
+Average Jaccard Index: 0.5315
+  Current learning rate: 0.000009
+  Augmentation curriculum: cosine, level=0.351, target_profile=moderate
+  Validation Dice: 0.6068, Jaccard: 0.4765
+  Validation Loss: 0.6013, Dice Gap: +0.0529
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 11/20
+
+Epoch [67/120], Loss: 0.5846
+Average Dice Coefficient: 0.6604
+Average Jaccard Index: 0.5325
+  Current learning rate: 0.000009
+  Augmentation curriculum: cosine, level=0.362, target_profile=moderate
+  Validation Dice: 0.6199, Jaccard: 0.4886
+  Validation Loss: 0.5955, Dice Gap: +0.0404
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 12/20
+
+Epoch [68/120], Loss: 0.5840
+Average Dice Coefficient: 0.6615
+Average Jaccard Index: 0.5341
+  Current learning rate: 0.000008
+  Augmentation curriculum: cosine, level=0.372, target_profile=moderate
+  Validation Dice: 0.6160, Jaccard: 0.4886
+  Validation Loss: 0.5952, Dice Gap: +0.0455
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 13/20
+
+Epoch [69/120], Loss: 0.5825
+Average Dice Coefficient: 0.6640
+Average Jaccard Index: 0.5363
+  Current learning rate: 0.000008
+  Augmentation curriculum: cosine, level=0.380, target_profile=moderate
+  Validation Dice: 0.6207, Jaccard: 0.4918
+  Validation Loss: 0.5992, Dice Gap: +0.0433
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 14/20
+
+Epoch [70/120], Loss: 0.5813
+Average Dice Coefficient: 0.6674
+Average Jaccard Index: 0.5398
+  Current learning rate: 0.000008
+  Augmentation curriculum: cosine, level=0.387, target_profile=moderate
+  Validation Dice: 0.6163, Jaccard: 0.4844
+  Validation Loss: 0.5974, Dice Gap: +0.0511
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 15/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_70.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [71/120], Loss: 0.5797
+Average Dice Coefficient: 0.6701
+Average Jaccard Index: 0.5438
+  Current learning rate: 0.000008
+  Augmentation curriculum: cosine, level=0.393, target_profile=moderate
+  Validation Dice: 0.5548, Jaccard: 0.4276
+  Validation Loss: 0.5965, Dice Gap: +0.1153
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 16/20
+
+Epoch [72/120], Loss: 0.5788
+Average Dice Coefficient: 0.6716
+Average Jaccard Index: 0.5448
+  Current learning rate: 0.000007
+  Augmentation curriculum: cosine, level=0.397, target_profile=moderate
+  Validation Dice: 0.6291, Jaccard: 0.5010
+  Validation Loss: 0.5970, Dice Gap: +0.0425
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 17/20
+
+Epoch [73/120], Loss: 0.5779
+Average Dice Coefficient: 0.6695
+Average Jaccard Index: 0.5433
+  Current learning rate: 0.000007
+  Augmentation curriculum: cosine, level=0.399, target_profile=moderate
+  Validation Dice: 0.6229, Jaccard: 0.4934
+  Validation Loss: 0.5938, Dice Gap: +0.0466
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 18/20
+
+Epoch [74/120], Loss: 0.5769
+Average Dice Coefficient: 0.6734
+Average Jaccard Index: 0.5462
+  Current learning rate: 0.000007
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6086, Jaccard: 0.4792
+  Validation Loss: 0.5938, Dice Gap: +0.0648
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 19/20
+
+Epoch [75/120], Loss: 0.5757
+Average Dice Coefficient: 0.6746
+Average Jaccard Index: 0.5483
+  Current learning rate: 0.000007
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6001, Jaccard: 0.4701
+  Validation Loss: 0.5921, Dice Gap: +0.0745
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 20/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [76/120], Loss: 0.5747
+Average Dice Coefficient: 0.6776
+Average Jaccard Index: 0.5514
+  Current learning rate: 0.000006
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6118, Jaccard: 0.4857
+  Validation Loss: 0.5867, Dice Gap: +0.0658
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 21/20
+
+Epoch [77/120], Loss: 0.5738
+Average Dice Coefficient: 0.6799
+Average Jaccard Index: 0.5536
+  Current learning rate: 0.000006
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6197, Jaccard: 0.4907
+  Validation Loss: 0.5892, Dice Gap: +0.0602
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 22/20
+
+Epoch [78/120], Loss: 0.5727
+Average Dice Coefficient: 0.6842
+Average Jaccard Index: 0.5590
+  Current learning rate: 0.000006
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6310, Jaccard: 0.5024
+  Validation Loss: 0.5898, Dice Gap: +0.0532
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 23/20
+
+Epoch [79/120], Loss: 0.5719
+Average Dice Coefficient: 0.6827
+Average Jaccard Index: 0.5573
+  Current learning rate: 0.000006
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.5984, Jaccard: 0.4715
+  Validation Loss: 0.5869, Dice Gap: +0.0843
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 24/20
+
+Epoch [80/120], Loss: 0.5707
+Average Dice Coefficient: 0.6860
+Average Jaccard Index: 0.5611
+  Current learning rate: 0.000005
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6215, Jaccard: 0.4934
+  Validation Loss: 0.5887, Dice Gap: +0.0646
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 25/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_80.pth
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [81/120], Loss: 0.5706
+Average Dice Coefficient: 0.6857
+Average Jaccard Index: 0.5607
+  Current learning rate: 0.000005
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6200, Jaccard: 0.4911
+  Validation Loss: 0.5919, Dice Gap: +0.0657
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 26/20
+
+Epoch [82/120], Loss: 0.5690
+Average Dice Coefficient: 0.6895
+Average Jaccard Index: 0.5653
+  Current learning rate: 0.000005
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6217, Jaccard: 0.4944
+  Validation Loss: 0.5889, Dice Gap: +0.0678
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 27/20
+
+Epoch [83/120], Loss: 0.5691
+Average Dice Coefficient: 0.6906
+Average Jaccard Index: 0.5657
+  Current learning rate: 0.000005
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6239, Jaccard: 0.4959
+  Validation Loss: 0.5858, Dice Gap: +0.0667
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 28/20
+
+Epoch [84/120], Loss: 0.5681
+Average Dice Coefficient: 0.6916
+Average Jaccard Index: 0.5670
+  Current learning rate: 0.000004
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6133, Jaccard: 0.4867
+  Validation Loss: 0.5848, Dice Gap: +0.0782
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 29/20
+
+Epoch [85/120], Loss: 0.5673
+Average Dice Coefficient: 0.6925
+Average Jaccard Index: 0.5680
+  Current learning rate: 0.000004
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6170, Jaccard: 0.4882
+  Validation Loss: 0.5892, Dice Gap: +0.0755
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 30/20
+  📊 GPU Memory Status: Allocated=333MB, Reserved=2708MB
+
+Epoch [86/120], Loss: 0.5663
+Average Dice Coefficient: 0.6959
+Average Jaccard Index: 0.5722
+  Current learning rate: 0.000004
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6087, Jaccard: 0.4793
+  Validation Loss: 0.5909, Dice Gap: +0.0873
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 31/20
+
+Epoch [87/120], Loss: 0.5657
+Average Dice Coefficient: 0.6963
+Average Jaccard Index: 0.5724
+  Current learning rate: 0.000004
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6122, Jaccard: 0.4836
+  Validation Loss: 0.5919, Dice Gap: +0.0842
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 32/20
+
+Epoch [88/120], Loss: 0.5651
+Average Dice Coefficient: 0.6979
+Average Jaccard Index: 0.5746
+  Current learning rate: 0.000004
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.6169, Jaccard: 0.4876
+  Validation Loss: 0.5924, Dice Gap: +0.0810
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 33/20
+
+Epoch [89/120], Loss: 0.5644
+Average Dice Coefficient: 0.6997
+Average Jaccard Index: 0.5766
+  Current learning rate: 0.000003
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.5955, Jaccard: 0.4678
+  Validation Loss: 0.5869, Dice Gap: +0.1042
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 34/20
+
+Epoch [90/120], Loss: 0.5641
+Average Dice Coefficient: 0.6993
+Average Jaccard Index: 0.5759
+  Current learning rate: 0.000003
+  Augmentation curriculum: cosine, level=0.400, target_profile=moderate
+  Validation Dice: 0.5609, Jaccard: 0.4331
+  Validation Loss: 0.5919, Dice Gap: +0.1384
+  Best Validation Dice: 0.6342 (epoch 55)
+  Patience Counter: 35/20
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model_epoch_90.pth
+
+⚠️  Early stopping triggered after 20 epochs without val Dice improvement.
+Best validation Dice: 0.6342 at epoch 55
+
+Training complete.
+Final Dice: 0.5609
+Final Jaccard: 0.4331
+Best Validation Dice: 0.6342 at epoch 55
+Training summary saved to 'runs/logs/C_scale075_l04_cls2w125_os15/summary.json'
+  ⚠ Warning: Failed to record final metrics: value should be one of int, float, str, bool, or torch.Tensor
+Training history saved to 'runs/logs/C_scale075_l04_cls2w125_os15/training_history.npy'
+------------------------------------------------------------
+Training complete!
+
+Saving final model to models/C_scale075_l04_cls2w125_os15/
+Model architecture saved to models/C_scale075_l04_cls2w125_os15/model_architecture.pth
+Model weights saved to models/C_scale075_l04_cls2w125_os15/model.pth

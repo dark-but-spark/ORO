@@ -1,0 +1,13 @@
+{
+  "dice_lt_0_001": 38,
+  "dice_lt_0_05": 40,
+  "dice_lt_0_2": 50,
+  "mean_tta_delta": 0.00718061640298844,
+  "no_tta_mean_dice": 0.7663322792754418,
+  "selected_review_rows": 110,
+  "tta_improved_count": 501,
+  "tta_mean_dice": 0.7735128956784302,
+  "tta_samples": 795,
+  "tta_severe_harm_count_delta_lt_minus_0_2": 10,
+  "tta_worse_count": 282
+}

@@ -1,60 +1,40 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
-# Run from the MultiResUNet directory on the server:
+# Run on the server from MultiResUNet:
 #   cd ~/ORO/MultiResUNet
 #   bash ../temp.sh
 #
-# Purpose:
-#   1. Create B_clean if needed, using group-safe Roboflow splitting.
-#   2. Train one B_clean anchor model.
-#   3. Evaluate B_clean model on A test.
-#   4. Evaluate existing A models on B_clean test for cross-source comparison.
+# Default plan (4 runs):
+#   Two seeds x {original train/valid, manually filtered train/valid}.
+#   All runs use the same original A test and exactly the same model settings.
+#
+# Optional model pilots (2 extra runs, together with the 4 controlled runs):
+#   RUN_MODEL_PILOTS=1 bash ../temp.sh
+# Run only the optional pilots after the controlled runs already finished:
+#   RUN_CONTROLLED=0 RUN_MODEL_PILOTS=1 bash ../temp.sh
+#
+# The script continues after a failed run and prints a failure summary at the end.
 
 mkdir -p runs/logs runs/debug_eval
 
 DATA_A="../data/20260204111923"
-DATA_B_RAW="../data/385-liver.v1i.yolov8"
+DATA_A_FILTERED="../data/20260204111923_trainval_review_filtered_20260731"
+DATA_A_CURATED="../data/20260204111923_curated_manual_review_20260731"
 DATA_B_CLEAN="../data/385-liver.groupclean.v1"
+RUN_CONTROLLED="${RUN_CONTROLLED:-1}"
+RUN_MODEL_PILOTS="${RUN_MODEL_PILOTS:-0}"
 
-B_CLEAN_NAME="V_Bclean_anchor_scale075_cls2w10"
+FAILED_TASKS=()
 
-ensure_b_clean() {
-  if [[ -d "${DATA_B_CLEAN}/train/images" && -d "${DATA_B_CLEAN}/train/masks" ]]; then
-    echo "B_clean dataset already exists: ${DATA_B_CLEAN}"
-    return
-  fi
-
-  echo "============================================================"
-  echo "Creating leakage-safe B_clean dataset"
-  echo "Source: ${DATA_B_RAW}"
-  echo "Output: ${DATA_B_CLEAN}"
-  echo "============================================================"
-
-  python scripts/group_split_roboflow_dataset.py \
-    --source-root "${DATA_B_RAW}" \
-    --output-root "${DATA_B_CLEAN}" \
-    --train-ratio 0.8 \
-    --val-ratio 0.1 \
-    --test-ratio 0.1 \
-    --seed 42 \
-    --max-variants-per-group 3 \
-    --copy-mode hardlink \
-    --convert-masks \
-    --num-classes 4
-}
-
-COMMON_TRAIN_ARGS=(
+COMMON_ARGS=(
   --split-mode fixed
-  --scale
-  --scale-factor 0.75
   --input-channels 3
   --output-channels 4
-  --model-architecture smp_unet
-  --encoder-name resnet34
-  --encoder-weights imagenet
-  --epochs 140
+  --epochs 160
   --batch-size 16
+  --scale
+  --scale-factor 0.75
   --learning-rate 2e-5
   --gradient-clip 0.5
   --weight-decay 2e-4
@@ -63,12 +43,18 @@ COMMON_TRAIN_ARGS=(
   --repeat-factor 1
   --train-augmentation
   --augmentation-strength mild
+  --augmentation-curriculum none
   --use-combined-loss
   --bce-weight 0.7
   --dice-weight 0.3
+  --class-weights 1 1 1 1
+  --model-architecture smp_unet
+  --encoder-name resnet34
+  --encoder-weights imagenet
+  --dropout-rate 0.2
   --lr-scheduler cosine
   --early-stopping-min-epochs 80
-  --early-stopping-patience 25
+  --early-stopping-patience 30
   --checkpoint-interval 0
   --tensorboard
   --tb-image-interval 0
@@ -80,88 +66,146 @@ COMMON_TRAIN_ARGS=(
   --test-threshold 0.5
   --metric-ignore-classes 2
   --device cuda
-  --seed 42
 )
 
-train_b_clean() {
-  local name="${B_CLEAN_NAME}"
-  local log_file="runs/logs/run_${name}.log"
+validate_dataset() {
+  local root="$1"
+  local split
+  local kind
 
-  echo "============================================================"
-  echo "Training ${name}"
-  echo "Dataset: ${DATA_B_CLEAN}"
-  echo "Log: ${log_file}"
-  echo "============================================================"
+  for split in train valid; do
+    for kind in images masks; do
+      if [[ ! -d "${root}/${split}/${kind}" ]]; then
+        echo "Missing dataset directory: ${root}/${split}/${kind}" >&2
+        return 1
+      fi
+    done
+  done
 
-  python train.py "${COMMON_TRAIN_ARGS[@]}" \
-    --train-img-dir "${DATA_B_CLEAN}/train/images" \
-    --train-mask-dir "${DATA_B_CLEAN}/train/masks" \
-    --val-img-dir "${DATA_B_CLEAN}/valid/images" \
-    --val-mask-dir "${DATA_B_CLEAN}/valid/masks" \
-    --test-img-dir "${DATA_B_CLEAN}/test/images" \
-    --test-mask-dir "${DATA_B_CLEAN}/test/masks" \
-    --class-weights 1 1 1 1 \
-    --save-dir "models/${name}" \
-    --log-dir "runs/logs/${name}" \
-    > "${log_file}" 2>&1
-
-  echo "Finished ${name}"
-}
-
-collect_runs() {
-  local pattern="$1"
-  mapfile -t FOUND_RUNS < <(find runs -maxdepth 1 -type d -name "${pattern}" | sort)
-  if [[ "${#FOUND_RUNS[@]}" -eq 0 ]]; then
-    echo "ERROR: no runs matched pattern: ${pattern}" >&2
-    exit 1
+  if [[ ! -d "${DATA_A}/test/images" || ! -d "${DATA_A}/test/masks" ]]; then
+    echo "Missing fixed original A test under ${DATA_A}/test" >&2
+    return 1
   fi
 }
 
-evaluate_group() {
+run_train() {
+  local name="$1"
+  local data_root="$2"
+  local seed="$3"
+  shift 3
+
+  local log_file="runs/logs/run_${name}.log"
+
+  if ! validate_dataset "${data_root}"; then
+    FAILED_TASKS+=("${name}:dataset")
+    return
+  fi
+
+  echo "============================================================"
+  echo "Starting ${name}"
+  echo "Train/valid root: ${data_root}"
+  echo "Fixed test root: ${DATA_A}"
+  echo "Seed: ${seed}"
+  echo "Log: ${log_file}"
+  echo "============================================================"
+
+  if python train.py "${COMMON_ARGS[@]}" \
+    --train-img-dir "${data_root}/train/images" \
+    --train-mask-dir "${data_root}/train/masks" \
+    --val-img-dir "${data_root}/valid/images" \
+    --val-mask-dir "${data_root}/valid/masks" \
+    --test-img-dir "${DATA_A}/test/images" \
+    --test-mask-dir "${DATA_A}/test/masks" \
+    --seed "${seed}" \
+    --save-dir "models/${name}" \
+    --log-dir "runs/logs/${name}" \
+    "$@" \
+    > "${log_file}" 2>&1; then
+    echo "Finished ${name}"
+  else
+    local rc=$?
+    echo "FAILED ${name} (exit ${rc}); continuing with the next run." >&2
+    FAILED_TASKS+=("${name}:exit_${rc}")
+  fi
+}
+
+eval_y_runs() {
   local label="$1"
   local test_root="$2"
-  shift 2
-  local output_prefix="runs/debug_eval/${label}"
+
+  if [[ ! -d "${test_root}/test/images" || ! -d "${test_root}/test/masks" ]]; then
+    echo "Skipping ${label}: test directory not found: ${test_root}"
+    return
+  fi
 
   echo "============================================================"
-  echo "Evaluating ${label}"
+  echo "Evaluating Y-series on ${label}"
   echo "Test root: ${test_root}"
-  echo "Run roots: $*"
   echo "============================================================"
 
-  python scripts/evaluate_history_on_test.py \
-    --run-roots "$@" \
+  if python scripts/evaluate_history_on_test.py \
+    --run-roots runs \
+    --include-run-pattern "Y_*" \
     --test-img-dir "${test_root}/test/images" \
     --test-mask-dir "${test_root}/test/masks" \
-    --output-csv "${output_prefix}.csv" \
-    --output-json "${output_prefix}.json" \
+    --output-csv "runs/debug_eval/${label}_Y_history_eval.csv" \
+    --output-json "runs/debug_eval/${label}_Y_history_eval.json" \
     --device cuda \
     --batch-size 8 \
     --num-workers 4 \
     --threshold 0.5 \
     --tta none \
     --metric-ignore-classes 2 \
-    --default-encoder-weights none
+    --encoder-weights none \
+    --default-encoder-weights none; then
+    echo "Finished evaluation: ${label}"
+  else
+    local rc=$?
+    echo "FAILED evaluation ${label} (exit ${rc}); continuing." >&2
+    FAILED_TASKS+=("eval_${label}:exit_${rc}")
+  fi
 }
 
-ensure_b_clean
-train_b_clean
-
-collect_runs "${B_CLEAN_NAME}_*"
-B_CLEAN_RUNS=("${FOUND_RUNS[@]}")
-
-evaluate_group "own_Bclean_model_on_Bclean_test" "${DATA_B_CLEAN}" "${B_CLEAN_RUNS[@]}"
-evaluate_group "cross_Bclean_model_on_A_test" "${DATA_A}" "${B_CLEAN_RUNS[@]}"
-
-if find runs -maxdepth 1 -type d -name "U_A_*" | grep -q .; then
-  collect_runs "U_A_*"
-  A_RUNS=("${FOUND_RUNS[@]}")
-  evaluate_group "cross_A_models_on_Bclean_test" "${DATA_B_CLEAN}" "${A_RUNS[@]}"
+# Phase 1: controlled data-cleaning comparison.
+# Do not infer a cleaning gain from one seed; both pairs must be compared.
+if [[ "${RUN_CONTROLLED}" == "1" ]]; then
+  run_train "Y_A_original_scale075_seed42" "${DATA_A}" 42
+  run_train "Y_A_filtered_scale075_seed42" "${DATA_A_FILTERED}" 42
+  run_train "Y_A_original_scale075_seed44" "${DATA_A}" 44
+  run_train "Y_A_filtered_scale075_seed44" "${DATA_A_FILTERED}" 44
 else
-  echo "No U_A_* runs found. Skipping A models on B_clean test."
+  echo "Skipping controlled data comparison (RUN_CONTROLLED=${RUN_CONTROLLED})."
 fi
 
-echo "B_clean training and cross-source evaluation completed."
-echo "Outputs:"
-echo "  Training log: runs/logs/run_${B_CLEAN_NAME}.log"
-echo "  Eval CSV/JSON: runs/debug_eval"
+# Phase 2: optional single-variable model pilots on the filtered dataset.
+# Enable explicitly. To avoid repeating completed controlled runs:
+#   RUN_CONTROLLED=0 RUN_MODEL_PILOTS=1 bash ../temp.sh
+if [[ "${RUN_MODEL_PILOTS}" == "1" ]]; then
+  run_train "Y_A_filtered_scale075_dropout03" "${DATA_A_FILTERED}" 42 \
+    --dropout-rate 0.3
+
+  run_train "Y_A_filtered_scale075_plateau" "${DATA_A_FILTERED}" 42 \
+    --lr-scheduler plateau \
+    --lr-patience 8
+else
+  echo "Skipping optional model pilots (set RUN_MODEL_PILOTS=1 to enable)."
+fi
+
+# Final evaluation: primary original test, explanatory curated test, and
+# secondary cross-source B_clean test. B_clean must not drive A hyperparameters.
+eval_y_runs "A_original_test" "${DATA_A}"
+eval_y_runs "A_curated_test" "${DATA_A_CURATED}"
+eval_y_runs "Bclean_cross_source_test" "${DATA_B_CLEAN}"
+
+echo "============================================================"
+if (( ${#FAILED_TASKS[@]} > 0 )); then
+  echo "Completed with ${#FAILED_TASKS[@]} failed task(s):"
+  printf '  - %s\n' "${FAILED_TASKS[@]}"
+  echo "Inspect runs/logs/run_Y_*.log and the timestamped runs/*/logs directory."
+  exit 1
+fi
+
+echo "All requested Y-series tasks completed successfully."
+echo "Training logs: runs/logs/run_Y_*.log"
+echo "Run directories: runs/Y_*"
+echo "Evaluation outputs: runs/debug_eval/*_Y_history_eval.csv"
