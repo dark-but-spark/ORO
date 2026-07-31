@@ -1,0 +1,23 @@
+{
+  "created_at": "2026-07-31T14:07:50",
+  "review_csv": "E:\\project\\ORO\\docs\\archive\\2026-07-31\\legacy_manual_review_input\\manual_review_sheet_extracted.csv",
+  "source_root": "E:\\project\\ORO\\data\\20260204111923",
+  "output_root": "E:\\project\\ORO\\data\\20260204111923_trainval_review_filtered_20260731",
+  "review_rows": 110,
+  "review_unique_images": 77,
+  "matched_unique_images": 74,
+  "excluded_trainval_images": 40,
+  "status_counts": {
+    "train:unreviewed_kept": 2721,
+    "train:reviewed_kept": 27,
+    "train:excluded_label_problem": 34,
+    "valid:unreviewed_kept": 781,
+    "valid:excluded_label_problem": 6,
+    "valid:reviewed_kept": 7,
+    "test:test_unmodified": 400
+  },
+  "copy_counts": {
+    "hardlink": 11808
+  },
+  "rule": "exclude train/valid images with suggest_fix_label=Y, gt_reliable=N, manual_error_type=A, or notes indicating label/GT problems; keep model-error/TTA-only cases; test split copied unchanged for compatibility"
+}

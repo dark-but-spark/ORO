@@ -1,0 +1,11 @@
+{
+  "img_dir": "E:\\project\\ORO\\data\\385-liver.groupclean.v1\\test\\images",
+  "label_dir": "E:\\project\\ORO\\data\\385-liver.groupclean.v1\\test\\labels",
+  "output_dir": "E:\\project\\ORO\\data\\385-liver.groupclean.v1\\test\\masks",
+  "num_classes": 4,
+  "images": 82,
+  "missing_labels": 0,
+  "invalid_images": 0,
+  "objects": 622,
+  "skipped_rows": 0
+}
