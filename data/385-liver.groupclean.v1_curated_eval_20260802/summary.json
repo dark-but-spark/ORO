@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-08-02T17:35:54",
+  "source_root": "data\\385-liver.groupclean.v1",
+  "output_root": "data\\385-liver.groupclean.v1_curated_eval_20260802",
+  "review_csv": [
+    "E:\\cjy\\xwechat_files\\wxid_3hpoaw1pywon22_43f2\\msg\\file\\2026-08\\manual_review_sheet_385-liver.groupclean.v1_test.csv",
+    "E:\\cjy\\xwechat_files\\wxid_3hpoaw1pywon22_43f2\\msg\\file\\2026-08\\manual_review_sheet_385-liver.groupclean.v1_valid.csv"
+  ],
+  "selection": "strict-eval",
+  "min_confidence": 4,
+  "review_rows": 167,
+  "selected_rows": 91,
+  "rejected_rows": 76,
+  "split_counts": {
+    "test": 43,
+    "valid": 48
+  },
+  "class_counts": {
+    "steatosis": 26,
+    "inflammation": 21,
+    "fibrosis": 35,
+    "ballooning": 9
+  },
+  "reject_reasons": {
+    "not_usable_for_valid": 67,
+    "suggest_exclude": 9
+  },
+  "copy_modes": {
+    "hardlink": 273
+  }
+}

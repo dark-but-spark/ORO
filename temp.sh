@@ -5,25 +5,27 @@ set -uo pipefail
 #   cd ~/ORO/MultiResUNet
 #   bash ../temp.sh
 #
-# Default plan (4 runs):
-#   Two seeds x {original train/valid, manually filtered train/valid}.
-#   All runs use the same original A test and exactly the same model settings.
+# Purpose:
+#   Z-series controlled pilots after manual review.
+#   - A line: train on original A train, compare original valid vs high-quality valid.
+#   - B line: B-only high-score pilots, trained sequentially, not in parallel.
+#   - Evaluation: every Z checkpoint is re-scored on A original test,
+#     A high-quality test, B original test, and B curated test.
 #
-# Optional model pilots (2 extra runs, together with the 4 controlled runs):
-#   RUN_MODEL_PILOTS=1 bash ../temp.sh
-# Run only the optional pilots after the controlled runs already finished:
-#   RUN_CONTROLLED=0 RUN_MODEL_PILOTS=1 bash ../temp.sh
-#
-# The script continues after a failed run and prints a failure summary at the end.
+# Optional expansion after default runs finish:
+#   RUN_EXTRA=1 bash ../temp.sh
 
 mkdir -p runs/logs runs/debug_eval
 
 DATA_A="../data/20260204111923"
-DATA_A_FILTERED="../data/20260204111923_trainval_review_filtered_20260731"
-DATA_A_CURATED="../data/20260204111923_curated_manual_review_20260731"
-DATA_B_CLEAN="../data/385-liver.groupclean.v1"
-RUN_CONTROLLED="${RUN_CONTROLLED:-1}"
-RUN_MODEL_PILOTS="${RUN_MODEL_PILOTS:-0}"
+DATA_A_HQ="../data/20260204111923_high_quality_eval_20260804"
+DATA_B="../data/385-liver.groupclean.v1"
+DATA_B_CURATED="../data/385-liver.groupclean.v1_curated_eval_20260802"
+
+CUDA_DEVICE="${CUDA_DEVICE:-0}"
+RUN_A="${RUN_A:-1}"
+RUN_B="${RUN_B:-1}"
+RUN_EXTRA="${RUN_EXTRA:-0}"
 
 FAILED_TASKS=()
 
@@ -31,10 +33,7 @@ COMMON_ARGS=(
   --split-mode fixed
   --input-channels 3
   --output-channels 4
-  --epochs 160
-  --batch-size 16
-  --scale
-  --scale-factor 0.75
+  --epochs 180
   --learning-rate 2e-5
   --gradient-clip 0.5
   --weight-decay 2e-4
@@ -47,14 +46,13 @@ COMMON_ARGS=(
   --use-combined-loss
   --bce-weight 0.7
   --dice-weight 0.3
-  --class-weights 1 1 1 1
   --model-architecture smp_unet
   --encoder-name resnet34
   --encoder-weights imagenet
   --dropout-rate 0.2
   --lr-scheduler cosine
-  --early-stopping-min-epochs 80
-  --early-stopping-patience 30
+  --early-stopping-min-epochs 90
+  --early-stopping-patience 35
   --checkpoint-interval 0
   --tensorboard
   --tb-image-interval 0
@@ -68,54 +66,62 @@ COMMON_ARGS=(
   --device cuda
 )
 
-validate_dataset() {
+require_split_dirs() {
   local root="$1"
-  local split
-  local kind
-
-  for split in train valid; do
-    for kind in images masks; do
-      if [[ ! -d "${root}/${split}/${kind}" ]]; then
-        echo "Missing dataset directory: ${root}/${split}/${kind}" >&2
-        return 1
-      fi
-    done
+  local split="$2"
+  for kind in images masks; do
+    if [[ ! -d "${root}/${split}/${kind}" ]]; then
+      echo "Missing directory: ${root}/${split}/${kind}" >&2
+      return 1
+    fi
   done
+}
 
-  if [[ ! -d "${DATA_A}/test/images" || ! -d "${DATA_A}/test/masks" ]]; then
-    echo "Missing fixed original A test under ${DATA_A}/test" >&2
-    return 1
-  fi
+validate_task_dirs() {
+  local train_root="$1"
+  local val_root="$2"
+  local test_root="$3"
+
+  require_split_dirs "${train_root}" train || return 1
+  require_split_dirs "${val_root}" valid || return 1
+  require_split_dirs "${test_root}" test || return 1
 }
 
 run_train() {
   local name="$1"
-  local data_root="$2"
-  local seed="$3"
-  shift 3
+  local train_root="$2"
+  local val_root="$3"
+  local test_root="$4"
+  local seed="$5"
+  local batch_size="$6"
+  shift 6
 
   local log_file="runs/logs/run_${name}.log"
 
-  if ! validate_dataset "${data_root}"; then
+  if ! validate_task_dirs "${train_root}" "${val_root}" "${test_root}"; then
     FAILED_TASKS+=("${name}:dataset")
     return
   fi
 
   echo "============================================================"
   echo "Starting ${name}"
-  echo "Train/valid root: ${data_root}"
-  echo "Fixed test root: ${DATA_A}"
+  echo "Train root: ${train_root}/train"
+  echo "Valid root: ${val_root}/valid"
+  echo "Test root:  ${test_root}/test"
   echo "Seed: ${seed}"
+  echo "Batch size: ${batch_size}"
   echo "Log: ${log_file}"
   echo "============================================================"
 
+  export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
   if python train.py "${COMMON_ARGS[@]}" \
-    --train-img-dir "${data_root}/train/images" \
-    --train-mask-dir "${data_root}/train/masks" \
-    --val-img-dir "${data_root}/valid/images" \
-    --val-mask-dir "${data_root}/valid/masks" \
-    --test-img-dir "${DATA_A}/test/images" \
-    --test-mask-dir "${DATA_A}/test/masks" \
+    --train-img-dir "${train_root}/train/images" \
+    --train-mask-dir "${train_root}/train/masks" \
+    --val-img-dir "${val_root}/valid/images" \
+    --val-mask-dir "${val_root}/valid/masks" \
+    --test-img-dir "${test_root}/test/images" \
+    --test-mask-dir "${test_root}/test/masks" \
+    --batch-size "${batch_size}" \
     --seed "${seed}" \
     --save-dir "models/${name}" \
     --log-dir "runs/logs/${name}" \
@@ -129,27 +135,27 @@ run_train() {
   fi
 }
 
-eval_y_runs() {
+eval_z_runs() {
   local label="$1"
   local test_root="$2"
 
-  if [[ ! -d "${test_root}/test/images" || ! -d "${test_root}/test/masks" ]]; then
-    echo "Skipping ${label}: test directory not found: ${test_root}"
+  if ! require_split_dirs "${test_root}" test; then
+    echo "Skipping ${label}: test split not found under ${test_root}"
     return
   fi
 
   echo "============================================================"
-  echo "Evaluating Y-series on ${label}"
+  echo "Evaluating Z-series on ${label}"
   echo "Test root: ${test_root}"
   echo "============================================================"
 
   if python scripts/evaluate_history_on_test.py \
     --run-roots runs \
-    --include-run-pattern "Y_*" \
+    --include-run-pattern "Z_*" \
     --test-img-dir "${test_root}/test/images" \
     --test-mask-dir "${test_root}/test/masks" \
-    --output-csv "runs/debug_eval/${label}_Y_history_eval.csv" \
-    --output-json "runs/debug_eval/${label}_Y_history_eval.json" \
+    --output-csv "runs/debug_eval/${label}_Z_history_eval.csv" \
+    --output-json "runs/debug_eval/${label}_Z_history_eval.json" \
     --device cuda \
     --batch-size 8 \
     --num-workers 4 \
@@ -166,46 +172,76 @@ eval_y_runs() {
   fi
 }
 
-# Phase 1: controlled data-cleaning comparison.
-# Do not infer a cleaning gain from one seed; both pairs must be compared.
-if [[ "${RUN_CONTROLLED}" == "1" ]]; then
-  run_train "Y_A_original_scale075_seed42" "${DATA_A}" 42
-  run_train "Y_A_filtered_scale075_seed42" "${DATA_A_FILTERED}" 42
-  run_train "Y_A_original_scale075_seed44" "${DATA_A}" 44
-  run_train "Y_A_filtered_scale075_seed44" "${DATA_A_FILTERED}" 44
+if [[ "${RUN_A}" == "1" ]]; then
+  # A1: original validation anchor. This preserves comparability with older A runs.
+  run_train "Z_A_origval_scale075_cls1111_seed42" "${DATA_A}" "${DATA_A}" "${DATA_A}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1 1
+
+  # A2: clean validation signal. Train set is unchanged; only validation/test
+  # switch to manually reviewed high-quality A subsets.
+  run_train "Z_A_hqval_scale075_cls1111_seed42" "${DATA_A}" "${DATA_A_HQ}" "${DATA_A_HQ}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1 1
+
+  # A3: reduce inflammation/class2 pressure because manual review found many
+  # ambiguous or incomplete class2 annotations.
+  run_train "Z_A_hqval_scale075_cls2w05_seed42" "${DATA_A}" "${DATA_A_HQ}" "${DATA_A_HQ}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 0.5 1
 else
-  echo "Skipping controlled data comparison (RUN_CONTROLLED=${RUN_CONTROLLED})."
+  echo "Skipping A pilots (RUN_A=${RUN_A})."
 fi
 
-# Phase 2: optional single-variable model pilots on the filtered dataset.
-# Enable explicitly. To avoid repeating completed controlled runs:
-#   RUN_CONTROLLED=0 RUN_MODEL_PILOTS=1 bash ../temp.sh
-if [[ "${RUN_MODEL_PILOTS}" == "1" ]]; then
-  run_train "Y_A_filtered_scale075_dropout03" "${DATA_A_FILTERED}" 42 \
-    --dropout-rate 0.3
+if [[ "${RUN_B}" == "1" ]]; then
+  # B runs are intentionally sequential and few. B_clean is small, so do not
+  # add many knobs before the fullres/scale choice is clear.
+  run_train "Z_B_curated_fullres_cls1111_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --class-weights 1 1 1 1
 
-  run_train "Y_A_filtered_scale075_plateau" "${DATA_A_FILTERED}" 42 \
+  run_train "Z_B_curated_scale075_cls1111_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1 1
+else
+  echo "Skipping B pilots (RUN_B=${RUN_B})."
+fi
+
+if [[ "${RUN_EXTRA}" == "1" ]]; then
+  # Extra runs: enable only after the default five runs are inspected.
+  run_train "Z_A_hqval_scale075_cls2w025_seed42" "${DATA_A}" "${DATA_A_HQ}" "${DATA_A_HQ}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 0.25 1
+
+  run_train "Z_A_hqval_scale075_plateau_seed42" "${DATA_A}" "${DATA_A_HQ}" "${DATA_A_HQ}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 0.5 1 \
     --lr-scheduler plateau \
     --lr-patience 8
+
+  run_train "Z_B_curated_fullres_dropout03_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --class-weights 1 1 1 1 \
+    --dropout-rate 0.3
+
+  run_train "Z_B_curated_fullres_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 8 \
+    --class-weights 1 1 1 1
 else
-  echo "Skipping optional model pilots (set RUN_MODEL_PILOTS=1 to enable)."
+  echo "Skipping extra pilots (set RUN_EXTRA=1 to enable)."
 fi
 
-# Final evaluation: primary original test, explanatory curated test, and
-# secondary cross-source B_clean test. B_clean must not drive A hyperparameters.
-eval_y_runs "A_original_test" "${DATA_A}"
-eval_y_runs "A_curated_test" "${DATA_A_CURATED}"
-eval_y_runs "Bclean_cross_source_test" "${DATA_B_CLEAN}"
+eval_z_runs "A_original_test" "${DATA_A}"
+eval_z_runs "A_high_quality_test" "${DATA_A_HQ}"
+eval_z_runs "B_original_test" "${DATA_B}"
+eval_z_runs "B_curated_test" "${DATA_B_CURATED}"
 
 echo "============================================================"
 if (( ${#FAILED_TASKS[@]} > 0 )); then
   echo "Completed with ${#FAILED_TASKS[@]} failed task(s):"
   printf '  - %s\n' "${FAILED_TASKS[@]}"
-  echo "Inspect runs/logs/run_Y_*.log and the timestamped runs/*/logs directory."
+  echo "Inspect runs/logs/run_Z_*.log and runs/debug_eval/*_Z_history_eval.csv."
   exit 1
 fi
 
-echo "All requested Y-series tasks completed successfully."
-echo "Training logs: runs/logs/run_Y_*.log"
-echo "Run directories: runs/Y_*"
-echo "Evaluation outputs: runs/debug_eval/*_Y_history_eval.csv"
+echo "All requested Z-series tasks completed successfully."
+echo "Training logs: runs/logs/run_Z_*.log"
+echo "Run directories: runs/Z_*"
+echo "Evaluation outputs: runs/debug_eval/*_Z_history_eval.csv"

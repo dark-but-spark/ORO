@@ -1333,3 +1333,76 @@ A valid：审查 150-200 张高风险与分层随机样本，不缩成过小 val
 A test：建立 150-200 张全部人工确认并冻结的代表性 test
 B_clean valid/test：共 167 张，建议全部审查
 ```
+
+---
+
+## 2026-08-04：A 类高质量评估集与 Z 系列训练计划
+
+### 数据分类结果
+
+根据人工审核的 `high_quality_candidates.csv`，从 A 数据 valid/test 候选中筛出严格高质量评估集：
+
+```text
+输出目录：data/20260204111923_high_quality_eval_20260804
+总候选：240
+严格入选：57
+valid：34
+test：23
+```
+
+严格规则：
+
+```text
+usable_for_valid = Y
+suggest_exclude != Y
+needs_relabel != Y
+label_confidence_1_to_5 >= 4
+```
+
+类别覆盖：
+
+```text
+气球样变：22
+纤维化：24
+炎症：10
+脂肪变：1
+```
+
+结论：这个集合适合做高可信 sanity test，但类别分布较窄，尤其脂肪变太少，不能替代完整 A test。
+
+### 下一轮训练策略
+
+已将 `temp.sh` 更新为 Z 系列默认 5 条顺序任务：
+
+```text
+Z_A_origval_scale075_cls1111_seed42
+Z_A_hqval_scale075_cls1111_seed42
+Z_A_hqval_scale075_cls2w05_seed42
+Z_B_curated_fullres_cls1111_seed42
+Z_B_curated_scale075_cls1111_seed42
+```
+
+训练目标：
+
+```text
+1. 保留 A original valid/test anchor，维持历史可比性。
+2. 引入 A high-quality valid/test，分辨模型问题和标注噪声问题。
+3. 降低 class2 权重到 0.5，测试炎症类标注噪声是否在拖累综合分数。
+4. B_clean 小数据只做 fullres vs scale075 两条顺序对照，避免一次加入太多变量。
+```
+
+训练后自动评估：
+
+```text
+A_original_test
+A_high_quality_test
+B_original_test
+B_curated_test
+```
+
+详细报告：
+
+```text
+runsTemp/manual_review_results_20260804/A_high_quality_quality_analysis.md
+runsTemp/manual_review_results_20260804/A_data_classification_and_Z_training_plan.md
+```

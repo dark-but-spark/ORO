@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-08-04T00:15:14",
+  "source_root": "data\\20260204111923",
+  "output_root": "data\\20260204111923_high_quality_eval_20260804",
+  "review_csv": [
+    "E:\\cjy\\xwechat_files\\wxid_3hpoaw1pywon22_43f2\\msg\\file\\2026-08\\high_quality_candidates.csv"
+  ],
+  "selection": "strict-eval",
+  "min_confidence": 4,
+  "review_rows": 240,
+  "selected_rows": 57,
+  "rejected_rows": 183,
+  "split_counts": {
+    "valid": 34,
+    "test": 23
+  },
+  "class_counts": {
+    "ballooning": 22,
+    "fibrosis": 24,
+    "inflammation": 10,
+    "steatosis": 1
+  },
+  "reject_reasons": {
+    "not_usable_for_valid": 170,
+    "suggest_exclude": 8,
+    "needs_relabel": 5
+  },
+  "copy_modes": {
+    "hardlink": 171
+  }
+}
