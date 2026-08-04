@@ -1406,3 +1406,91 @@ B_curated_test
 runsTemp/manual_review_results_20260804/A_high_quality_quality_analysis.md
 runsTemp/manual_review_results_20260804/A_data_classification_and_Z_training_plan.md
 ```
+
+## 2026-08-05 B4 B-Only Curated Eval Archive
+
+本轮结果已经归档：
+
+```text
+D:/project/ORO/runsArchive/20260805_B4_B_only_curated_eval/
+```
+
+归档前来源：
+
+```text
+D:/project/ORO/runsNew/
+```
+
+归档后 `runsNew` 已清空，留给下一轮 B5 训练结果使用。
+
+### 本轮口径
+
+```text
+目标域: B
+目标指标: 4-class global Dice，不忽略任何类别
+主验证/测试: B curated eval
+原始 B test: 仅作参考，因为历史 split 存在泄漏风险
+历史 0.7726: A+B 混合 train/valid 的历史结果，不再作为 B 单域有效最高分
+```
+
+### B curated test + TTA 排名
+
+```text
+1. B4_scale075_cls2w125_os20_tta_seed42    Dice=0.825411  Jaccard=0.712468  class Dice=[1.0000, 0.9165, 0.8145, 0.9404]
+2. B4_scale075_cls2w15_os15_tta_seed42     Dice=0.823260  Jaccard=0.713087  class Dice=[0.8333, 0.7513, 0.7982, 0.9461]
+3. B4_anchor_scale075_cls2w125_os15_seed42 Dice=0.821999  Jaccard=0.717302  class Dice=[1.0000, 0.9163, 0.8119, 0.9477]
+4. B4_fullres_cls2w125_os15_seed42         Dice=0.813233  Jaccard=0.696429  class Dice=[1.0000, 0.9083, 0.8255, 0.9376]
+5. B4_scale075_cls1111_os15_seed42         Dice=0.807615  Jaccard=0.691755  class Dice=[0.8333, 0.9093, 0.6104, 0.9377]
+```
+
+### 当前 B 单域基线
+
+```text
+run: B4_scale075_cls2w125_os20_tta_seed42_20260804_234911
+model: SMP-Unet / resnet34 / imagenet
+scale_factor: 0.75
+class_weights: [1.0, 1.0, 1.25, 1.0]
+class2 oversample_factor: 2.0
+loss: BCE/Dice = 0.7/0.3
+augmentation: mild + cosine curriculum, max level 0.4
+scheduler: cosine, T_max=100
+B curated test TTA global Dice: 0.825411
+```
+
+### 结论
+
+```text
+1. B 域当前不是急需换新策略，而是应该围绕 B4 winner 做局部搜索。
+2. class2 仍需要额外关注；取消 class2 权重会明显拉低 class2 Dice。
+3. oversample_factor=2.0 比 1.5 更好，下一步应细扫 1.75/2.25/2.5。
+4. fullres 的 class2 Dice 有吸引力，但 global Dice 低于 scale0.75，暂不作为单模型主线，可保留给 ensemble/融合。
+5. TTA 对 B curated test 有明显增益；若部署成本允许，应把 TTA 当作第一候选。
+```
+
+### 下一步训练
+
+`temp.sh` 已写入 B5 overnight queue，默认执行 B5：
+
+```text
+cd ~/ORO/MultiResUNet
+bash ../temp.sh
+```
+
+B5 方向：
+
+```text
+loss ratio: BCE/Dice 0.6/0.4, 0.5/0.5
+oversampling: class2 factor 1.75, 2.25, 2.5
+class weight: class2 weight 1.15, 1.35
+focal: softer focal alpha=0.5 gamma=1.5 + BCE/Dice 0.6/0.4
+capacity: resnet50 single probe
+stability: B4 winner seed 43, seed 44
+```
+
+晋级规则：
+
+```text
+只有当 B5 在 B curated test + TTA 上超过 0.825411，
+并且 no-TTA 结果没有明显恶化时，才替代 B4 baseline。
+优先相信多 seed 均值提升，不优先相信单次偶然峰值。
+```

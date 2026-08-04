@@ -12,7 +12,13 @@ set -uo pipefail
 #   - Primary validation/test: B curated eval split.
 #   - Original B evaluation is reference only because the raw split had leakage.
 #
-# Optional expansion after default runs finish:
+# Default: run the B5 overnight queue (about 10 training jobs) from the
+# current B-only winner.  The historical B4 pilots are disabled by default
+# because they have already completed.
+#   bash ../temp.sh
+#
+# Optional historical pilot groups:
+#   RUN_B=1 bash ../temp.sh
 #   RUN_EXTRA=1 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
@@ -24,9 +30,10 @@ DATA_B="../data/385-liver.groupclean.v1"
 DATA_B_CURATED="../data/385-liver.groupclean.v1_curated_eval_20260802"
 
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
-RUN_B="${RUN_B:-1}"
+RUN_B="${RUN_B:-0}"
 RUN_EXTRA="${RUN_EXTRA:-0}"
-RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-1}"
+RUN_NIGHT="${RUN_NIGHT:-1}"
+RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
 
 FAILED_TASKS=()
 
@@ -141,6 +148,7 @@ eval_b_runs() {
   local label="$1"
   local test_root="$2"
   local tta_mode="$3"
+  local run_pattern="$4"
 
   if ! require_split_dirs "${test_root}" test; then
     echo "Skipping ${label}: test split not found under ${test_root}"
@@ -148,18 +156,18 @@ eval_b_runs() {
   fi
 
   echo "============================================================"
-  echo "Evaluating B4-series on ${label}"
+  echo "Evaluating ${run_pattern} on ${label}"
   echo "Test root: ${test_root}"
   echo "TTA: ${tta_mode}"
   echo "============================================================"
 
   if python scripts/evaluate_history_on_test.py \
     --run-roots runs \
-    --include-run-pattern "B4_*" \
+    --include-run-pattern "${run_pattern}" \
     --test-img-dir "${test_root}/test/images" \
     --test-mask-dir "${test_root}/test/masks" \
-    --output-csv "runs/debug_eval/${label}_B4_history_eval.csv" \
-    --output-json "runs/debug_eval/${label}_B4_history_eval.json" \
+    --output-csv "runs/debug_eval/${label}_history_eval.csv" \
+    --output-json "runs/debug_eval/${label}_history_eval.json" \
     --device cuda \
     --batch-size 8 \
     --num-workers 4 \
@@ -262,11 +270,95 @@ else
   echo "Skipping extra pilots (set RUN_EXTRA=1 to enable)."
 fi
 
-eval_b_runs "B_curated_test_tta" "${DATA_B_CURATED}" "flips"
-eval_b_runs "B_curated_test_notta" "${DATA_B_CURATED}" "none"
+if [[ "${RUN_NIGHT}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B5 overnight queue.  Primary target is B curated-test 4-class GLOBAL Dice.
+  # The reference to beat is B4_scale075_cls2w125_os20 (TTA Dice 0.825411).
+  # Every job stays B-only and uses the same curated validation/test split.
+  # -------------------------------------------------------------------------
+
+  # Direction 1: loss balance.  B4 used BCE:Dice = 0.7:0.3.  Increase Dice
+  # pressure to improve shape/overlap without changing the sample distribution.
+  run_train "B5_scale075_os20_bce06_dice04_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --bce-weight 0.6 --dice-weight 0.4
+
+  run_train "B5_scale075_os20_bce05_dice05_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --bce-weight 0.5 --dice-weight 0.5
+
+  # Direction 2: identify the useful class-2 sampling range around 2.0.
+  run_train "B5_scale075_cls2w125_os175_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 1.75
+
+  run_train "B5_scale075_cls2w125_os225_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.25
+
+  run_train "B5_scale075_cls2w125_os250_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.5
+
+  # Direction 3: keep sampling at its current optimum, then tune only the
+  # class-2 loss weight.  This distinguishes loss bias from data exposure.
+  run_train "B5_scale075_cls2w115_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B5_scale075_cls2w135_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.35 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  # Direction 4: Focal + Dice is a qualitatively different loss.  It can help
+  # hard/small regions but is retained only if it improves GLOBAL Dice.
+  run_train "B5_scale075_focal05_g15_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --use-focal-loss --focal-alpha 0.5 --focal-gamma 1.5 \
+    --bce-weight 0.6 --dice-weight 0.4
+
+  # Direction 5: capacity/regularization sentinel.  One ResNet-50 run tests
+  # whether the B-only data supports a larger encoder; do not expand it unless
+  # it clears the ResNet-34 reference.
+  run_train "B5_scale075_resnet50_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50
+
+  # Direction 6: reproducibility.  Repeat the current winner with two unseen
+  # seeds.  A tiny one-seed gain is not a promotion candidate.
+  run_train "B5_scale075_cls2w125_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B5_scale075_cls2w125_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.25 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+else
+  echo "Skipping overnight B5 queue (RUN_NIGHT=${RUN_NIGHT})."
+fi
+
+if [[ "${RUN_NIGHT}" == "1" ]]; then
+  eval_b_runs "B_curated_test_tta_B5" "${DATA_B_CURATED}" "flips" "B5_*"
+  eval_b_runs "B_curated_test_notta_B5" "${DATA_B_CURATED}" "none" "B5_*"
+fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
-  eval_b_runs "B_original_test_tta_reference" "${DATA_B}" "flips"
+  eval_b_runs "B_original_test_tta_reference_B5" "${DATA_B}" "flips" "B5_*"
 else
   echo "Skipping raw B reference evaluation (RUN_REFERENCE_EVAL=${RUN_REFERENCE_EVAL})."
 fi
@@ -275,12 +367,12 @@ echo "============================================================"
 if (( ${#FAILED_TASKS[@]} > 0 )); then
   echo "Completed with ${#FAILED_TASKS[@]} failed task(s):"
   printf '  - %s\n' "${FAILED_TASKS[@]}"
-  echo "Inspect runs/logs/run_B4_*.log and runs/debug_eval/*_B4_history_eval.csv."
+  echo "Inspect runs/logs/run_B5_*.log and runs/debug_eval/*_B5_history_eval.csv."
   exit 1
 fi
 
-echo "All requested B4-series tasks completed successfully."
-echo "Primary metric: 4-class global Dice on B_curated_test_tta."
-echo "Training logs: runs/logs/run_B4_*.log"
-echo "Run directories: runs/B4_*"
-echo "Evaluation outputs: runs/debug_eval/*_B4_history_eval.csv"
+echo "All requested B5 overnight tasks completed successfully."
+echo "Primary metric: 4-class global Dice on B_curated_test_tta_B5."
+echo "Training logs: runs/logs/run_B5_*.log"
+echo "Run directories: runs/B5_*"
+echo "Evaluation outputs: runs/debug_eval/*_B5_history_eval.csv"
