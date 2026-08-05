@@ -57,7 +57,9 @@ class SegmentationDataset(Dataset):
                  original_height=None, original_width=None, repeat_factor=1,
                  apply_augmentation=True, augmentation_strength='mild',
                  strong_aug_prob=0.0, strong_aug_strength='strong',
-                 augmentation_schedule_level=0.0):
+                 augmentation_schedule_level=0.0, patch_size=0,
+                 patch_positive_probability=0.75, patch_class_indices=None,
+                 patch_min_positive_pixels=1, patch_center_jitter=0.25):
         """
         Args:
             img_dir (str): Directory containing image files
@@ -76,6 +78,11 @@ class SegmentationDataset(Dataset):
             strong_aug_prob (float, optional): Probability of sampling strong_aug_strength instead of augmentation_strength
             strong_aug_strength (str, optional): Strong-side profile used for augmentation mixing
             augmentation_schedule_level (float, optional): Interpolation level from augmentation_strength to strong_aug_strength
+            patch_size (int, optional): Native-resolution square training patch size. 0 disables patch sampling
+            patch_positive_probability (float): Probability that a patch is centered near a positive mask pixel
+            patch_class_indices (list[int], optional): Channels eligible for positive-centered patch sampling
+            patch_min_positive_pixels (int): Minimum channel pixels required before it can drive positive sampling
+            patch_center_jitter (float): Random center offset as a fraction of patch size
         """
         self.img_dir = img_dir
         self.mask_dir = mask_dir
@@ -90,6 +97,11 @@ class SegmentationDataset(Dataset):
         self.strong_aug_prob = max(0.0, min(1.0, float(strong_aug_prob)))
         self.strong_aug_strength = strong_aug_strength
         self.augmentation_schedule_level = max(0.0, min(1.0, float(augmentation_schedule_level)))
+        self.patch_size = max(0, int(patch_size or 0))
+        self.patch_positive_probability = max(0.0, min(1.0, float(patch_positive_probability)))
+        self.patch_class_indices = None if patch_class_indices is None else [int(idx) for idx in patch_class_indices]
+        self.patch_min_positive_pixels = max(1, int(patch_min_positive_pixels))
+        self.patch_center_jitter = max(0.0, min(0.5, float(patch_center_jitter)))
         
         # Get file lists
         if img_files is None or mask_files is None:
@@ -118,6 +130,11 @@ class SegmentationDataset(Dataset):
             print(f"  Original dimensions: {original_width}x{original_height}")
         if repeat_factor > 1:
             print(f"  Repeat factor: {repeat_factor} (effective samples: {len(img_files) * repeat_factor})")
+        if self.patch_size > 0:
+            patch_classes = self.patch_class_indices if self.patch_class_indices is not None else 'all'
+            print(f"  Native-resolution patch sampling: {self.patch_size}x{self.patch_size}")
+            print(f"  Positive patch probability: {self.patch_positive_probability:.2f}, classes={patch_classes}, "
+                  f"min_pixels={self.patch_min_positive_pixels}, center_jitter={self.patch_center_jitter:.2f}")
         print(f"  Augmentation: {'Enabled' if apply_augmentation else 'Disabled'}")
         if apply_augmentation:
             print(f"  Augmentation strength: {augmentation_strength}")
@@ -204,6 +221,64 @@ class SegmentationDataset(Dataset):
                 self.augmentation_schedule_level
             )
         return self._augmentation_params(self.augmentation_strength)
+
+    def _extract_training_patch(self, img, mask):
+        """Sample one native-resolution patch, optionally centered near foreground."""
+        patch_size = self.patch_size
+        if patch_size <= 0:
+            return img, mask
+
+        h, w = img.shape[:2]
+        pad_h = max(0, patch_size - h)
+        pad_w = max(0, patch_size - w)
+        if pad_h or pad_w:
+            img = cv2.copyMakeBorder(
+                img, 0, pad_h, 0, pad_w, borderType=cv2.BORDER_REFLECT_101
+            )
+            mask = cv2.copyMakeBorder(
+                mask, 0, pad_h, 0, pad_w, borderType=cv2.BORDER_CONSTANT, value=0
+            )
+            h, w = img.shape[:2]
+
+        max_top = h - patch_size
+        max_left = w - patch_size
+        center_y = None
+        center_x = None
+
+        if mask.ndim == 3 and random.random() < self.patch_positive_probability:
+            if self.patch_class_indices is None:
+                candidate_indices = list(range(mask.shape[2]))
+            else:
+                candidate_indices = [idx for idx in self.patch_class_indices if 0 <= idx < mask.shape[2]]
+
+            positive_channels = []
+            for class_idx in candidate_indices:
+                positive_count = int(np.count_nonzero(mask[:, :, class_idx] > 0))
+                if positive_count >= self.patch_min_positive_pixels:
+                    positive_channels.append(class_idx)
+
+            if positive_channels:
+                class_idx = random.choice(positive_channels)
+                positive_flat = np.flatnonzero(mask[:, :, class_idx] > 0)
+                selected_flat = int(positive_flat[random.randrange(len(positive_flat))])
+                center_y, center_x = divmod(selected_flat, w)
+
+                jitter_pixels = int(round(patch_size * self.patch_center_jitter))
+                if jitter_pixels > 0:
+                    center_y += random.randint(-jitter_pixels, jitter_pixels)
+                    center_x += random.randint(-jitter_pixels, jitter_pixels)
+
+        if center_y is None:
+            top = random.randint(0, max_top) if max_top > 0 else 0
+            left = random.randint(0, max_left) if max_left > 0 else 0
+        else:
+            top = min(max(0, center_y - patch_size // 2), max_top)
+            left = min(max(0, center_x - patch_size // 2), max_left)
+
+        return (
+            img[top:top + patch_size, left:left + patch_size],
+            mask[top:top + patch_size, left:left + patch_size],
+        )
     
     def apply_random_augmentations(self, img, mask):
         """Apply random augmentations to both image and mask consistently"""
@@ -360,6 +435,11 @@ class SegmentationDataset(Dataset):
         mask = mask_data['mask']
         mask = mask / 255.0  # Normalize to [0, 1]
         mask = mask.astype(np.float32)
+
+        # Training-only ROI/patch sampling is performed at native resolution.
+        # Validation and test datasets leave patch_size=0 and remain whole-image.
+        if self.patch_size > 0:
+            img, mask = self._extract_training_patch(img, mask)
         
         # Scale if enabled - BEFORE augmentations
         if self.scale:
@@ -482,7 +562,9 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    strong_aug_prob=0.0, strong_aug_strength='strong',
                    augmentation_schedule_level=0.0,
                    oversample_class_indices=None, oversample_factor=1.0,
-                   oversample_min_pixels=1):
+                   oversample_min_pixels=1, train_patch_size=0,
+                   patch_positive_probability=0.75, patch_class_indices=None,
+                   patch_min_positive_pixels=1, patch_center_jitter=0.25):
     """Create training and validation datasets without loading all data into memory.
     
     This function creates dataset objects that will load data on-demand,
@@ -579,7 +661,12 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         augmentation_strength=augmentation_strength,
         strong_aug_prob=strong_aug_prob,
         strong_aug_strength=strong_aug_strength,
-        augmentation_schedule_level=augmentation_schedule_level
+        augmentation_schedule_level=augmentation_schedule_level,
+        patch_size=train_patch_size,
+        patch_positive_probability=patch_positive_probability,
+        patch_class_indices=patch_class_indices,
+        patch_min_positive_pixels=patch_min_positive_pixels,
+        patch_center_jitter=patch_center_jitter,
     )
     
     val_dataset = SegmentationDataset(
@@ -612,7 +699,9 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
                           augmentation_strength='mild', strong_aug_prob=0.0,
                           strong_aug_strength='strong', augmentation_schedule_level=0.0,
                           oversample_class_indices=None, oversample_factor=1.0,
-                          oversample_min_pixels=1, seed=42):
+                          oversample_min_pixels=1, seed=42, train_patch_size=0,
+                          patch_positive_probability=0.75, patch_class_indices=None,
+                          patch_min_positive_pixels=1, patch_center_jitter=0.25):
     """Create datasets from explicit train and validation directories."""
     train_img_files, train_mask_files = list_paired_image_mask_files(
         train_img_dir, train_mask_dir, limit=limit
@@ -658,7 +747,12 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
         augmentation_strength=augmentation_strength,
         strong_aug_prob=strong_aug_prob,
         strong_aug_strength=strong_aug_strength,
-        augmentation_schedule_level=augmentation_schedule_level
+        augmentation_schedule_level=augmentation_schedule_level,
+        patch_size=train_patch_size,
+        patch_positive_probability=patch_positive_probability,
+        patch_class_indices=patch_class_indices,
+        patch_min_positive_pixels=patch_min_positive_pixels,
+        patch_center_jitter=patch_center_jitter,
     )
 
     val_dataset = SegmentationDataset(

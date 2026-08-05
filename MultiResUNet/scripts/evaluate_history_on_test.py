@@ -143,42 +143,55 @@ def evaluate(model, loader, device, output_channels, threshold=0.5, tta="none", 
         "dice_ignore_classes": 0.0,
         "jaccard_ignore_classes": 0.0,
     }
-    class_dice_sum = None
-    class_jaccard_sum = None
+    class_intersection_sum = None
+    class_true_sum = None
+    class_pred_sum = None
     batches = 0
+    samples = 0
 
     with torch.no_grad():
         for images, targets in tqdm(loader, desc="Evaluating", leave=False):
+            batch_samples = targets.size(0)
             images = images.to(device)
             targets = targets.to(device)
             probs = predict_prob_with_tta(model, images, tta)
             preds = (probs >= threshold).float()
 
-            totals["dice"] += dice_coef(targets, preds).item()
-            totals["jaccard"] += jacard(targets, preds).item()
-            class_dice, class_jaccard = per_class_segmentation_metrics(targets, preds)
-            class_dice_sum = class_dice if class_dice_sum is None else class_dice_sum + class_dice
-            class_jaccard_sum = class_jaccard if class_jaccard_sum is None else class_jaccard_sum + class_jaccard
+            totals["dice"] += dice_coef(targets, preds).item() * batch_samples
+            totals["jaccard"] += jacard(targets, preds).item() * batch_samples
+            targets_by_class = targets.reshape(targets.size(0), targets.size(1), -1)
+            preds_by_class = preds.reshape(preds.size(0), preds.size(1), -1)
+            class_intersection = (targets_by_class * preds_by_class).sum(dim=(0, 2)).detach().cpu()
+            class_true = targets_by_class.sum(dim=(0, 2)).detach().cpu()
+            class_pred = preds_by_class.sum(dim=(0, 2)).detach().cpu()
+            class_intersection_sum = class_intersection if class_intersection_sum is None else class_intersection_sum + class_intersection
+            class_true_sum = class_true if class_true_sum is None else class_true_sum + class_true
+            class_pred_sum = class_pred if class_pred_sum is None else class_pred_sum + class_pred
 
             if keep_classes and len(keep_classes) != output_channels:
-                totals["dice_ignore_classes"] += dice_coef(targets[:, keep_classes], preds[:, keep_classes]).item()
-                totals["jaccard_ignore_classes"] += jacard(targets[:, keep_classes], preds[:, keep_classes]).item()
+                totals["dice_ignore_classes"] += dice_coef(targets[:, keep_classes], preds[:, keep_classes]).item() * batch_samples
+                totals["jaccard_ignore_classes"] += jacard(targets[:, keep_classes], preds[:, keep_classes]).item() * batch_samples
             batches += 1
+            samples += batch_samples
 
-    if batches == 0:
+    if samples == 0:
         raise ValueError("Test loader is empty")
 
+    smooth = 1e-6
+    class_dice = (2.0 * class_intersection_sum + smooth) / (class_true_sum + class_pred_sum + smooth)
+    class_jaccard = (class_intersection_sum + smooth) / (class_true_sum + class_pred_sum - class_intersection_sum + smooth)
     result = {
-        "test_dice": totals["dice"] / batches,
-        "test_jaccard": totals["jaccard"] / batches,
-        "test_class_dice": (class_dice_sum / batches).tolist(),
-        "test_class_jaccard": (class_jaccard_sum / batches).tolist(),
+        "test_dice": totals["dice"] / samples,
+        "test_jaccard": totals["jaccard"] / samples,
+        "test_class_dice": class_dice.tolist(),
+        "test_class_jaccard": class_jaccard.tolist(),
         "test_batches": batches,
+        "metric_samples": samples,
     }
     if keep_classes and len(keep_classes) != output_channels:
         result["metric_ignore_classes"] = ignore_classes
-        result["test_dice_ignore_classes"] = totals["dice_ignore_classes"] / batches
-        result["test_jaccard_ignore_classes"] = totals["jaccard_ignore_classes"] / batches
+        result["test_dice_ignore_classes"] = totals["dice_ignore_classes"] / samples
+        result["test_jaccard_ignore_classes"] = totals["jaccard_ignore_classes"] / samples
     return result
 
 

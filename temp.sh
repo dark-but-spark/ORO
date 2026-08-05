@@ -12,9 +12,8 @@ set -uo pipefail
 #   - Primary validation/test: B curated eval split.
 #   - Original B evaluation is reference only because the raw split had leakage.
 #
-# Default: run the B6 overnight queue from the current B-only winner found in
-# B5 (scale=0.75, class2 weight=1.15, class2 oversampling=2.0).
-# Historical B4/B5 queues are disabled by default because they are complete.
+# Default: re-evaluate B4-B6 with sample-weighted metrics, then run the B8
+# native-resolution ROI/patch queue. Historical B4-B7 queues are disabled.
 #   bash ../temp.sh
 #
 # Optional historical pilot groups:
@@ -34,8 +33,12 @@ CUDA_DEVICE="${CUDA_DEVICE:-0}"
 RUN_B="${RUN_B:-0}"
 RUN_EXTRA="${RUN_EXTRA:-0}"
 RUN_NIGHT="${RUN_NIGHT:-0}"
-RUN_B6="${RUN_B6:-1}"
+RUN_B6="${RUN_B6:-0}"
+RUN_B7="${RUN_B7:-0}"
+RUN_ROI_PATCH="${RUN_ROI_PATCH:-1}"
+RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-4}"
 
 FAILED_TASKS=()
 
@@ -49,6 +52,7 @@ COMMON_ARGS=(
   --weight-decay 5e-4
   --num-workers 4
   --prefetch-factor 2
+  --eval-batch-size "${EVAL_BATCH_SIZE}"
   --repeat-factor 1
   --train-augmentation
   --augmentation-strength mild
@@ -151,29 +155,31 @@ eval_b_runs() {
   local test_root="$2"
   local tta_mode="$3"
   local run_pattern="$4"
+  local threshold="${5:-0.5}"
+  local split="${6:-test}"
 
-  if ! require_split_dirs "${test_root}" test; then
-    echo "Skipping ${label}: test split not found under ${test_root}"
+  if ! require_split_dirs "${test_root}" "${split}"; then
+    echo "Skipping ${label}: ${split} split not found under ${test_root}"
     return
   fi
 
   echo "============================================================"
   echo "Evaluating ${run_pattern} on ${label}"
-  echo "Test root: ${test_root}"
+  echo "Evaluation root: ${test_root}/${split}"
   echo "TTA: ${tta_mode}"
   echo "============================================================"
 
   if python scripts/evaluate_history_on_test.py \
     --run-roots runs \
     --include-run-pattern "${run_pattern}" \
-    --test-img-dir "${test_root}/test/images" \
-    --test-mask-dir "${test_root}/test/masks" \
+    --test-img-dir "${test_root}/${split}/images" \
+    --test-mask-dir "${test_root}/${split}/masks" \
     --output-csv "runs/debug_eval/${label}_history_eval.csv" \
     --output-json "runs/debug_eval/${label}_history_eval.json" \
     --device cuda \
-    --batch-size 8 \
+    --batch-size "${EVAL_BATCH_SIZE}" \
     --num-workers 4 \
-    --threshold 0.5 \
+    --threshold "${threshold}" \
     --tta "${tta_mode}" \
     --encoder-weights none \
     --default-encoder-weights none; then
@@ -450,9 +456,224 @@ if [[ "${RUN_B6}" == "1" ]]; then
   eval_b_runs "B_curated_test_notta_B6" "${DATA_B_CURATED}" "none" "B6_*"
 fi
 
+if [[ "${RUN_CORRECTED_HISTORY_EVAL}" == "1" ]]; then
+  # Previous history evaluation averaged batches equally. With 43 test images
+  # and batch size 8, the final 3-image batch was overweighted. The evaluator
+  # now weights every image equally, so regenerate the comparable B4-B6 table
+  # before promoting any recipe.
+  eval_b_runs "B_curated_test_tta_B4_B6_sampleweighted" "${DATA_B_CURATED}" "flips" "B[456]_*"
+  eval_b_runs "B_curated_test_notta_B4_B6_sampleweighted" "${DATA_B_CURATED}" "none" "B[456]_*"
+else
+  echo "Skipping corrected B4-B6 history evaluation."
+fi
+
+if [[ "${RUN_B7}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B7 overnight queue. Primary target: sample-weighted, per-image 4-class
+  # global Dice on curated B. B6's apparent peak (cls2w=1.05, seed=42,
+  # old TTA Dice=0.834425) is not promoted until it reproduces across seeds.
+  # -------------------------------------------------------------------------
+
+  # Priority 1: reproduce the B6 1.05 winner. Together with existing seed 42,
+  # these runs provide a four-seed stability estimate.
+  run_train "B7_cls2w105_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B7_cls2w105_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B7_cls2w105_os20_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  # Priority 2: determine whether class-2 weighting should return toward 1.0.
+  run_train "B7_cls2w100_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.00 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B7_cls2w1025_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.025 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B7_cls2w1075_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.075 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  # Priority 3: check the sampling interaction only around the new 1.05 center.
+  run_train "B7_cls2w105_os18_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 1.8
+
+  run_train "B7_cls2w105_os22_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.2
+
+  # Priority 4: B6 showed 3e-5 is viable and converges faster. Test whether it
+  # combines with the 1.05 weight before spending more seeds on it.
+  run_train "B7_cls2w105_os20_lr3e5_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --learning-rate 3e-5
+
+  # Priority 5: capacity verification. ResNet50 led no-TTA in B6, so test the
+  # new class weight once and reproduce the existing 1.15 recipe twice.
+  run_train "B7_resnet50_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50
+
+  run_train "B7_resnet50_cls2w115_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50
+
+  run_train "B7_resnet50_cls2w115_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50
+else
+  echo "Skipping B7 queue (RUN_B7=${RUN_B7})."
+fi
+
+if [[ "${RUN_B7}" == "1" ]]; then
+  eval_b_runs "B_curated_test_tta_B7_sampleweighted" "${DATA_B_CURATED}" "flips" "B7_*"
+  eval_b_runs "B_curated_test_notta_B7_sampleweighted" "${DATA_B_CURATED}" "none" "B7_*"
+
+  # Threshold selection must use validation rather than the test set. These
+  # exports are intentionally labeled VALID; choose one threshold after B7,
+  # then run exactly one locked test evaluation in the next stage.
+  for threshold in 0.40 0.45 0.50 0.55 0.60; do
+    threshold_label="${threshold/./p}"
+    eval_b_runs "B_curated_valid_tta_B7_thr${threshold_label}" "${DATA_B_CURATED}" "flips" "B7_*" "${threshold}" "valid"
+  done
+fi
+
+if [[ "${RUN_ROI_PATCH}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B8 native-resolution ROI/patch queue.
+  # Train: mask-guided patches cropped from the original 640x640 B images.
+  # Valid/test: complete 640x640 images; no GT-guided cropping is used outside
+  # training. Validation TTA is disabled to keep full-resolution training fast;
+  # final history evaluation below reports both flips TTA and no-TTA.
+  # -------------------------------------------------------------------------
+
+  # Main ROI recipe and one unseen seed for immediate stability evidence.
+  run_train "B8_roi384_pos075_all_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.75 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  run_train "B8_roi384_pos075_all_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.75 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  # Patch-size search: 320 emphasizes detail; 448 retains more context.
+  run_train "B8_roi320_pos075_all_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 20 \
+    --train-patch-size 320 \
+    --patch-positive-probability 0.75 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  run_train "B8_roi448_pos075_all_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --train-patch-size 448 \
+    --patch-positive-probability 0.75 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  # Foreground/background balance around the 384 mainline.
+  run_train "B8_roi384_pos050_all_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.50 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  run_train "B8_roi384_pos090_all_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.90 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  # Class-2 targeted ROI, because class 2 occupies only about 0.85% of B train
+  # pixels. Images without class 2 automatically fall back to random patches.
+  run_train "B8_roi384_pos085_cls2_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.85 \
+    --patch-class-indices 2 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+
+  # Random-patch control determines how much gain comes from ROI guidance rather
+  # than native resolution alone.
+  run_train "B8_patch384_random_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --train-patch-size 384 \
+    --patch-positive-probability 0.0 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none
+else
+  echo "Skipping ROI/patch queue (RUN_ROI_PATCH=${RUN_ROI_PATCH})."
+fi
+
+if [[ "${RUN_ROI_PATCH}" == "1" ]]; then
+  eval_b_runs "B_curated_test_tta_B8_roi_sampleweighted" "${DATA_B_CURATED}" "flips" "B8_*"
+  eval_b_runs "B_curated_test_notta_B8_roi_sampleweighted" "${DATA_B_CURATED}" "none" "B8_*"
+
+  # Threshold selection stays on validation. Keep the first sweep coarse; once
+  # the winning patch recipe is known, refine only around its best threshold.
+  for threshold in 0.45 0.50 0.55; do
+    threshold_label="${threshold/./p}"
+    eval_b_runs "B_curated_valid_tta_B8_roi_thr${threshold_label}" "${DATA_B_CURATED}" "flips" "B8_*" "${threshold}" "valid"
+  done
+fi
+
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
   if [[ "${RUN_B6}" == "1" ]]; then
     eval_b_runs "B_original_test_tta_reference_B6" "${DATA_B}" "flips" "B6_*"
+  fi
+  if [[ "${RUN_B7}" == "1" ]]; then
+    eval_b_runs "B_original_test_tta_reference_B7" "${DATA_B}" "flips" "B7_*"
+  fi
+  if [[ "${RUN_ROI_PATCH}" == "1" ]]; then
+    eval_b_runs "B_original_test_tta_reference_B8_roi" "${DATA_B}" "flips" "B8_*"
   fi
   if [[ "${RUN_NIGHT}" == "1" ]]; then
     eval_b_runs "B_original_test_tta_reference_B5" "${DATA_B}" "flips" "B5_*"
@@ -471,6 +692,6 @@ fi
 
 echo "All requested B-only tasks completed successfully."
 echo "Primary metric: 4-class global Dice on the B curated test split."
-echo "B6 training logs: runs/logs/run_B6_*.log"
-echo "B6 run directories: runs/B6_*"
-echo "B6 evaluation outputs: runs/debug_eval/*_B6_history_eval.csv"
+echo "B8 ROI training logs: runs/logs/run_B8_*.log"
+echo "B8 ROI run directories: runs/B8_*"
+echo "B8 ROI evaluation outputs: runs/debug_eval/*_B8_*.csv"

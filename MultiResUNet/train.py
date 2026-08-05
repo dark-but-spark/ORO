@@ -165,7 +165,7 @@ def setup_run_outputs(args):
     print("=" * 60)
 
 
-def _make_loader(dataset, args, shuffle=False):
+def _make_loader(dataset, args, shuffle=False, batch_size=None):
     from torch.utils.data import DataLoader
 
     cpu_count = os.cpu_count() or 4
@@ -174,14 +174,15 @@ def _make_loader(dataset, args, shuffle=False):
     loader_generator.manual_seed(args.seed)
 
     def seed_worker(worker_id):
-        worker_seed = args.seed + worker_id
+        # Varies deterministically when workers are recreated each epoch.
+        worker_seed = torch.initial_seed() % (2 ** 32)
         random.seed(worker_seed)
         np.random.seed(worker_seed)
         torch.manual_seed(worker_seed)
 
     return DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size if batch_size is not None else args.batch_size,
         shuffle=shuffle,
         num_workers=optimal_workers,
         pin_memory=torch.cuda.is_available(),
@@ -198,6 +199,13 @@ def _save_split_manifest(args, train_dataset=None, val_dataset=None, test_datase
         "split_mode": args.split_mode,
         "validation_split": args.validation_split,
         "seed": args.seed,
+        "train_patch": {
+            "size": args.train_patch_size,
+            "positive_probability": args.patch_positive_probability,
+            "class_indices": args.patch_class_indices,
+            "min_positive_pixels": args.patch_min_positive_pixels,
+            "center_jitter": args.patch_center_jitter,
+        },
         "paths": {
             "train_img_dir": args.train_img_dir,
             "train_mask_dir": args.train_mask_dir,
@@ -240,48 +248,61 @@ def evaluate_loader(model, loader, device, tta_mode='none', threshold=0.5, metri
     total_ignore_dice = 0.0
     total_ignore_jaccard = 0.0
     num_batches = 0
-    class_dice_sum = None
-    class_jaccard_sum = None
+    num_samples = 0
+    class_intersection_sum = None
+    class_true_sum = None
+    class_pred_sum = None
 
     with torch.no_grad():
         for images, targets in loader:
+            batch_samples = targets.size(0)
             images = images.to(device)
             targets = targets.to(device)
             probs = predict_prob_with_tta(model, images, tta_mode)
             preds = (probs >= threshold).float()
 
-            total_dice += dice_coef(targets, preds).item()
-            total_jaccard += jacard(targets, preds).item()
-            class_dice, class_jaccard = per_class_segmentation_metrics(targets, preds)
-            class_dice_sum = class_dice if class_dice_sum is None else class_dice_sum + class_dice
-            class_jaccard_sum = class_jaccard if class_jaccard_sum is None else class_jaccard_sum + class_jaccard
+            total_dice += dice_coef(targets, preds).item() * batch_samples
+            total_jaccard += jacard(targets, preds).item() * batch_samples
+            targets_by_class = targets.reshape(targets.size(0), targets.size(1), -1)
+            preds_by_class = preds.reshape(preds.size(0), preds.size(1), -1)
+            class_intersection = (targets_by_class * preds_by_class).sum(dim=(0, 2)).detach().cpu()
+            class_true = targets_by_class.sum(dim=(0, 2)).detach().cpu()
+            class_pred = preds_by_class.sum(dim=(0, 2)).detach().cpu()
+            class_intersection_sum = class_intersection if class_intersection_sum is None else class_intersection_sum + class_intersection
+            class_true_sum = class_true if class_true_sum is None else class_true_sum + class_true
+            class_pred_sum = class_pred if class_pred_sum is None else class_pred_sum + class_pred
 
             if metric_ignore_classes:
                 keep = [
                     idx for idx in range(targets.size(1))
                     if idx not in set(metric_ignore_classes)
                 ]
-                total_ignore_dice += dice_coef(targets[:, keep], preds[:, keep]).item()
-                total_ignore_jaccard += jacard(targets[:, keep], preds[:, keep]).item()
+                total_ignore_dice += dice_coef(targets[:, keep], preds[:, keep]).item() * batch_samples
+                total_ignore_jaccard += jacard(targets[:, keep], preds[:, keep]).item() * batch_samples
 
             num_batches += 1
+            num_samples += batch_samples
 
-    if num_batches == 0:
+    if num_samples == 0:
         raise ValueError("Evaluation loader is empty")
 
+    smooth = 1e-6
+    class_dice = (2.0 * class_intersection_sum + smooth) / (class_true_sum + class_pred_sum + smooth)
+    class_jaccard = (class_intersection_sum + smooth) / (class_true_sum + class_pred_sum - class_intersection_sum + smooth)
     metrics = {
-        "dice": total_dice / num_batches,
-        "jaccard": total_jaccard / num_batches,
+        "dice": total_dice / num_samples,
+        "jaccard": total_jaccard / num_samples,
         "threshold": threshold,
         "tta": tta_mode,
         "batches": num_batches,
-        "class_dice": (class_dice_sum / num_batches).tolist(),
-        "class_jaccard": (class_jaccard_sum / num_batches).tolist(),
+        "samples": num_samples,
+        "class_dice": class_dice.tolist(),
+        "class_jaccard": class_jaccard.tolist(),
     }
     if metric_ignore_classes:
         metrics["metric_ignore_classes"] = list(metric_ignore_classes)
-        metrics["dice_ignore_classes"] = total_ignore_dice / num_batches
-        metrics["jaccard_ignore_classes"] = total_ignore_jaccard / num_batches
+        metrics["dice_ignore_classes"] = total_ignore_dice / num_samples
+        metrics["jaccard_ignore_classes"] = total_ignore_jaccard / num_samples
     return metrics
 
 
@@ -302,7 +323,12 @@ def run_final_test_evaluation(args, model, device):
         apply_augmentation=False,
         augmentation_strength=args.augmentation_strength,
     )
-    test_loader, _ = _make_loader(test_dataset, args, shuffle=False)
+    test_loader, _ = _make_loader(
+        test_dataset,
+        args,
+        shuffle=False,
+        batch_size=args.eval_batch_size,
+    )
 
     best_model_path = Path(args.save_dir) / "best_model.pth"
     if args.save_model and best_model_path.exists():
@@ -584,6 +610,16 @@ def parse_args():
                         help='Enable image scaling')
     parser.add_argument('--scale-factor', type=float, default=0.5,
                         help='Scale factor for images (default: 0.5). E.g., 0.5 reduces to 50%%, 1.5 increases to 150%%')
+    parser.add_argument('--train-patch-size', type=int, default=0,
+                        help='Native-resolution square patches for training only; 0 keeps whole images (default: 0)')
+    parser.add_argument('--patch-positive-probability', type=float, default=0.75,
+                        help='Probability of centering a training patch near a positive mask pixel (default: 0.75)')
+    parser.add_argument('--patch-class-indices', type=int, nargs='+', default=None,
+                        help='Mask channels eligible for positive-centered patches; default uses all channels')
+    parser.add_argument('--patch-min-positive-pixels', type=int, default=1,
+                        help='Minimum positive pixels for a channel to drive ROI patch sampling (default: 1)')
+    parser.add_argument('--patch-center-jitter', type=float, default=0.25,
+                        help='Patch-center jitter as a fraction of patch size, in [0, 0.5] (default: 0.25)')
     
     # Model arguments
     parser.add_argument('--input-channels', type=int, default=3,
@@ -603,6 +639,8 @@ def parse_args():
                         help='Number of training epochs (default: 50)')
     parser.add_argument('--batch-size', type=int, default=2,
                         help='Batch size for training (default: 2)')
+    parser.add_argument('--eval-batch-size', type=int, default=None,
+                        help='Validation and final-test batch size; defaults to --batch-size')
     parser.add_argument('--learning-rate', type=float, default=1e-4,
                         help='Initial learning rate (default: 1e-4)')
     
@@ -751,6 +789,24 @@ def main():
         raise ValueError(
             f"--class-weights expects {args.output_channels} values, got {len(args.class_weights)}"
         )
+    if args.train_patch_size < 0 or (args.train_patch_size > 0 and args.train_patch_size % 32 != 0):
+        raise ValueError("--train-patch-size must be 0 or a positive multiple of 32")
+    if not 0.0 <= args.patch_positive_probability <= 1.0:
+        raise ValueError("--patch-positive-probability must be between 0 and 1")
+    if not 0.0 <= args.patch_center_jitter <= 0.5:
+        raise ValueError("--patch-center-jitter must be between 0 and 0.5")
+    if args.eval_batch_size is not None and args.eval_batch_size <= 0:
+        raise ValueError("--eval-batch-size must be positive")
+    if args.patch_class_indices is not None:
+        invalid_patch_classes = [
+            idx for idx in args.patch_class_indices
+            if idx < 0 or idx >= args.output_channels
+        ]
+        if invalid_patch_classes:
+            raise ValueError(
+                f"--patch-class-indices contains invalid values {invalid_patch_classes}; "
+                f"valid range is 0..{args.output_channels - 1}"
+            )
     
     # Print configuration
     print("=" * 60)
@@ -770,6 +826,12 @@ def main():
     print(f"Scale Enabled: {args.scale}")
     if args.scale:
         print(f"Scale Factor: {args.scale_factor} ({args.scale_factor*100:.0f}%)")
+    print(f"Train Patch Size: {args.train_patch_size if args.train_patch_size > 0 else 'Disabled'}")
+    if args.train_patch_size > 0:
+        print(f"Patch Positive Probability: {args.patch_positive_probability}")
+        print(f"Patch Classes: {args.patch_class_indices if args.patch_class_indices is not None else 'All'}")
+        print(f"Patch Min Positive Pixels: {args.patch_min_positive_pixels}")
+        print(f"Patch Center Jitter: {args.patch_center_jitter}")
     print(f"Input Channels: {args.input_channels}")
     print(f"Output Channels: {args.output_channels}")
     print(f"Model Architecture: {args.model_architecture}")
@@ -777,6 +839,7 @@ def main():
         print(f"Encoder: {args.encoder_name}, weights={args.encoder_weights}")
     print(f"Epochs: {args.epochs}")
     print(f"Batch Size: {args.batch_size}")
+    print(f"Evaluation Batch Size: {args.eval_batch_size if args.eval_batch_size is not None else args.batch_size}")
     print(f"Learning Rate: {args.learning_rate}")
     print(f"Gradient Clipping: {args.gradient_clip}")
     print(f"Weight Decay: {args.weight_decay}")
@@ -898,7 +961,8 @@ def main():
     print(f"\nLoading data...")
     
     # Option 1: Use memory-efficient Dataset approach.
-    if args.split_mode == 'fixed' or args.data_limit is None or args.data_limit > 500:
+    if (args.split_mode == 'fixed' or args.data_limit is None or
+            args.data_limit > 500 or args.train_patch_size > 0):
         print("Using memory-efficient dataset loading (recommended for large datasets)...")
 
         if args.split_mode == 'fixed':
@@ -921,7 +985,12 @@ def main():
                 oversample_class_indices=args.oversample_class_indices,
                 oversample_factor=args.oversample_factor,
                 oversample_min_pixels=args.oversample_min_pixels,
-                seed=args.seed
+                seed=args.seed,
+                train_patch_size=args.train_patch_size,
+                patch_positive_probability=args.patch_positive_probability,
+                patch_class_indices=args.patch_class_indices,
+                patch_min_positive_pixels=args.patch_min_positive_pixels,
+                patch_center_jitter=args.patch_center_jitter,
             )
         else:
             train_dataset, val_dataset, n_train, n_val = create_datasets(
@@ -942,6 +1011,11 @@ def main():
                 oversample_class_indices=args.oversample_class_indices,
                 oversample_factor=args.oversample_factor,
                 oversample_min_pixels=args.oversample_min_pixels,
+                train_patch_size=args.train_patch_size,
+                patch_positive_probability=args.patch_positive_probability,
+                patch_class_indices=args.patch_class_indices,
+                patch_min_positive_pixels=args.patch_min_positive_pixels,
+                patch_center_jitter=args.patch_center_jitter,
                 shuffle=True,
                 seed=args.seed
             )
@@ -960,7 +1034,12 @@ def main():
         _save_split_manifest(args, train_dataset, val_dataset, test_dataset_for_manifest)
 
         train_loader, optimal_workers = _make_loader(train_dataset, args, shuffle=True)
-        val_loader, _ = _make_loader(val_dataset, args, shuffle=False)
+        val_loader, _ = _make_loader(
+            val_dataset,
+            args,
+            shuffle=False,
+            batch_size=args.eval_batch_size,
+        )
         
         print(f"✓ Training samples: {n_train}")
         print(f"✓ Validation samples: {n_val}")
@@ -1014,6 +1093,15 @@ def main():
             train_augmentation=args.train_augmentation,
             val_augmentation=args.val_augmentation,
             repeat_factor=args.repeat_factor,
+            train_patch_size=args.train_patch_size,
+            patch_positive_probability=args.patch_positive_probability,
+            patch_class_indices=args.patch_class_indices,
+            patch_min_positive_pixels=args.patch_min_positive_pixels,
+            patch_center_jitter=args.patch_center_jitter,
+            eval_batch_size=args.eval_batch_size if args.eval_batch_size is not None else args.batch_size,
+            oversample_class_indices=args.oversample_class_indices,
+            oversample_factor=args.oversample_factor,
+            oversample_min_pixels=args.oversample_min_pixels,
             seed=args.seed,
             early_stopping_patience=args.early_stopping_patience,
             early_stopping_min_delta=args.early_stopping_min_delta,

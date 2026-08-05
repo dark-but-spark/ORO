@@ -628,9 +628,11 @@ def evaluateModel(model, X_test=None, Y_test=None, batch_size=2, device=None, va
     total_dice = 0
     total_jaccard = 0
     num_batches = 0
+    num_samples = 0
 
     with torch.no_grad():
         for X_batch, Y_batch in val_loader:
+            batch_samples = Y_batch.size(0)
             # Move batch to device if specified
             if device is not None:
                 X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
@@ -647,12 +649,13 @@ def evaluateModel(model, X_test=None, Y_test=None, batch_size=2, device=None, va
             dice = dice_coef(Y_batch, Y_pred_binary)
             jaccard = jacard(Y_batch, Y_pred_binary)
 
-            total_dice += dice.item()
-            total_jaccard += jaccard.item()
+            total_dice += dice.item() * batch_samples
+            total_jaccard += jaccard.item() * batch_samples
             num_batches += 1
+            num_samples += batch_samples
 
-    avg_dice = total_dice / num_batches
-    avg_jaccard = total_jaccard / num_batches
+    avg_dice = total_dice / num_samples
+    avg_jaccard = total_jaccard / num_samples
 
     print(f"Average Dice Coefficient: {avg_dice:.4f}")
     print(f"Average Jaccard Index: {avg_jaccard:.4f}")
@@ -669,7 +672,12 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               scale=False, scale_factor=0.5, data_limit=None, validation_split=0.1,
               input_channels=3, output_channels=4,
               model_architecture='multiresunet', encoder_name=None, encoder_weights=None,
-              train_augmentation=False, val_augmentation=False, repeat_factor=1, seed=42,
+              train_augmentation=False, val_augmentation=False, repeat_factor=1,
+              train_patch_size=0, patch_positive_probability=0.75,
+              patch_class_indices=None, patch_min_positive_pixels=1,
+              patch_center_jitter=0.25, eval_batch_size=None,
+              oversample_class_indices=None, oversample_factor=1.0,
+              oversample_min_pixels=1, seed=42,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
@@ -927,6 +935,15 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'train_augmentation': train_augmentation,
         'val_augmentation': val_augmentation,
         'repeat_factor': repeat_factor,
+        'train_patch_size': train_patch_size,
+        'patch_positive_probability': patch_positive_probability,
+        'patch_class_indices': patch_class_indices if patch_class_indices is not None else [],
+        'patch_min_positive_pixels': patch_min_positive_pixels,
+        'patch_center_jitter': patch_center_jitter,
+        'eval_batch_size': eval_batch_size if eval_batch_size is not None else batch_size,
+        'oversample_class_indices': oversample_class_indices if oversample_class_indices is not None else [],
+        'oversample_factor': oversample_factor,
+        'oversample_min_pixels': oversample_min_pixels,
         'seed': seed,
         'use_focal_loss': use_focal_loss,
         'focal_alpha': focal_alpha,
@@ -1095,12 +1112,15 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         total_jaccard = 0.0
         total_ignore_dice = 0.0
         total_ignore_jaccard = 0.0
-        total_class_dice = None
-        total_class_jaccard = None
+        class_intersection_sum = None
+        class_true_sum = None
+        class_pred_sum = None
         num_batches = 0
+        num_samples = 0
 
         with torch.no_grad():
             for X_val_batch, Y_val_batch in val_loader:
+                batch_samples = Y_val_batch.size(0)
                 if device is not None:
                     X_val_batch = X_val_batch.to(device)
                     Y_val_batch = Y_val_batch.to(device)
@@ -1111,28 +1131,45 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
 
                 batch_dice = dice_coef(Y_val_batch, Y_val_binary)
                 batch_jaccard = jacard(Y_val_batch, Y_val_binary)
-                class_dice, class_jaccard = per_class_segmentation_metrics(Y_val_batch, Y_val_binary)
+                true_by_class = Y_val_batch.reshape(Y_val_batch.size(0), Y_val_batch.size(1), -1)
+                pred_by_class = Y_val_binary.reshape(Y_val_binary.size(0), Y_val_binary.size(1), -1)
+                class_intersection = (true_by_class * pred_by_class).sum(dim=(0, 2)).detach().cpu()
+                class_true = true_by_class.sum(dim=(0, 2)).detach().cpu()
+                class_pred = pred_by_class.sum(dim=(0, 2)).detach().cpu()
                 if metric_ignore_classes:
                     kept_true = Y_val_batch[:, metric_kept_classes]
                     kept_pred = Y_val_binary[:, metric_kept_classes]
-                    total_ignore_dice += dice_coef(kept_true, kept_pred).item()
-                    total_ignore_jaccard += jacard(kept_true, kept_pred).item()
+                    total_ignore_dice += dice_coef(kept_true, kept_pred).item() * batch_samples
+                    total_ignore_jaccard += jacard(kept_true, kept_pred).item() * batch_samples
 
-                val_running_loss += val_loss.item()
-                total_dice += batch_dice.item()
-                total_jaccard += batch_jaccard.item()
-                total_class_dice = class_dice if total_class_dice is None else total_class_dice + class_dice
-                total_class_jaccard = class_jaccard if total_class_jaccard is None else total_class_jaccard + class_jaccard
+                val_running_loss += val_loss.item() * batch_samples
+                total_dice += batch_dice.item() * batch_samples
+                total_jaccard += batch_jaccard.item() * batch_samples
+                class_intersection_sum = class_intersection if class_intersection_sum is None else class_intersection_sum + class_intersection
+                class_true_sum = class_true if class_true_sum is None else class_true_sum + class_true
+                class_pred_sum = class_pred if class_pred_sum is None else class_pred_sum + class_pred
                 num_batches += 1
+                num_samples += batch_samples
 
-        avg_val_loss = val_running_loss / max(1, num_batches)
-        avg_dice = total_dice / max(1, num_batches)
-        avg_jaccard = total_jaccard / max(1, num_batches)
-        avg_class_dice = (total_class_dice / max(1, num_batches)).tolist() if total_class_dice is not None else []
-        avg_class_jaccard = (total_class_jaccard / max(1, num_batches)).tolist() if total_class_jaccard is not None else []
+        avg_val_loss = val_running_loss / max(1, num_samples)
+        avg_dice = total_dice / max(1, num_samples)
+        avg_jaccard = total_jaccard / max(1, num_samples)
+        if class_intersection_sum is not None:
+            smooth = 1e-6
+            avg_class_dice = (
+                (2.0 * class_intersection_sum + smooth) /
+                (class_true_sum + class_pred_sum + smooth)
+            ).tolist()
+            avg_class_jaccard = (
+                (class_intersection_sum + smooth) /
+                (class_true_sum + class_pred_sum - class_intersection_sum + smooth)
+            ).tolist()
+        else:
+            avg_class_dice = []
+            avg_class_jaccard = []
         if metric_ignore_classes:
-            avg_ignore_dice = total_ignore_dice / max(1, num_batches)
-            avg_ignore_jaccard = total_ignore_jaccard / max(1, num_batches)
+            avg_ignore_dice = total_ignore_dice / max(1, num_samples)
+            avg_ignore_jaccard = total_ignore_jaccard / max(1, num_samples)
             avg_macro_ignore_dice = sum(avg_class_dice[idx] for idx in metric_kept_classes) / len(metric_kept_classes)
             avg_macro_ignore_jaccard = sum(avg_class_jaccard[idx] for idx in metric_kept_classes) / len(metric_kept_classes)
         else:
@@ -1184,8 +1221,10 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         total_dice = 0.0
         total_jaccard = 0.0
         num_batches = 0
+        num_samples = 0
 
         for X_batch, Y_batch in train_loader:
+            batch_samples = Y_batch.size(0)
             # Move batch to device if specified
             if device is not None:
                 X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
@@ -1209,14 +1248,15 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             dice = dice_coef(Y_batch, Y_pred_binary)
             jaccard = jacard(Y_batch, Y_pred_binary)
 
-            running_loss += loss.item()
-            total_dice += dice.item()
-            total_jaccard += jaccard.item()
+            running_loss += loss.item() * batch_samples
+            total_dice += dice.item() * batch_samples
+            total_jaccard += jaccard.item() * batch_samples
             num_batches += 1
+            num_samples += batch_samples
 
-        epoch_loss = running_loss / num_batches
-        epoch_dice = total_dice / num_batches
-        epoch_jaccard = total_jaccard / num_batches
+        epoch_loss = running_loss / num_samples
+        epoch_dice = total_dice / num_samples
+        epoch_jaccard = total_jaccard / num_samples
 
         # Evaluate on validation set and collect all logging metrics in a single pass.
         (
