@@ -12,14 +12,15 @@ set -uo pipefail
 #   - Primary validation/test: B curated eval split.
 #   - Original B evaluation is reference only because the raw split had leakage.
 #
-# Default: run the B5 overnight queue (about 10 training jobs) from the
-# current B-only winner.  The historical B4 pilots are disabled by default
-# because they have already completed.
+# Default: run the B6 overnight queue from the current B-only winner found in
+# B5 (scale=0.75, class2 weight=1.15, class2 oversampling=2.0).
+# Historical B4/B5 queues are disabled by default because they are complete.
 #   bash ../temp.sh
 #
 # Optional historical pilot groups:
 #   RUN_B=1 bash ../temp.sh
 #   RUN_EXTRA=1 bash ../temp.sh
+#   RUN_NIGHT=1 RUN_B6=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -32,7 +33,8 @@ DATA_B_CURATED="../data/385-liver.groupclean.v1_curated_eval_20260802"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
 RUN_B="${RUN_B:-0}"
 RUN_EXTRA="${RUN_EXTRA:-0}"
-RUN_NIGHT="${RUN_NIGHT:-1}"
+RUN_NIGHT="${RUN_NIGHT:-0}"
+RUN_B6="${RUN_B6:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
 
 FAILED_TASKS=()
@@ -357,8 +359,104 @@ if [[ "${RUN_NIGHT}" == "1" ]]; then
   eval_b_runs "B_curated_test_notta_B5" "${DATA_B_CURATED}" "none" "B5_*"
 fi
 
+if [[ "${RUN_B6}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B6 overnight queue. Primary target is B curated-test 4-class GLOBAL Dice.
+  # B5 winner: cls2w=1.15, os=2.0, seed=42, TTA Dice=0.832412.
+  # B5 showed that larger Dice-loss weight, focal loss, and os > 2.0 were not
+  # consistently useful. B6 therefore verifies the winner first, then searches
+  # only its local neighborhood plus a few independent training directions.
+  # -------------------------------------------------------------------------
+
+  # Priority 1: reproducibility of the new winner. These two runs decide
+  # whether 0.8324 is a stable recipe or a favorable seed.
+  run_train "B6_anchor_cls2w115_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B6_anchor_cls2w115_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  # Direction 1: fine class-2 loss-weight search around 1.15.
+  run_train "B6_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B6_cls2w110_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.10 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  run_train "B6_cls2w120_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.20 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0
+
+  # Direction 2: local sampling search with the new 1.15 class weight.
+  run_train "B6_cls2w115_os18_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 1.8
+
+  run_train "B6_cls2w115_os22_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.2
+
+  # Direction 3: optimization speed. Keep all data/loss settings fixed.
+  run_train "B6_cls2w115_os20_lr1e5_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --learning-rate 1e-5
+
+  run_train "B6_cls2w115_os20_lr3e5_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --learning-rate 3e-5
+
+  # Direction 4: augmentation regularization. B images may need less or more
+  # invariance than the current cosine curriculum maximum of 0.4.
+  run_train "B6_cls2w115_os20_aug02_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --curriculum-max-aug-level 0.2
+
+  run_train "B6_cls2w115_os20_aug06_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --curriculum-max-aug-level 0.6
+
+  # Direction 5: capacity. ResNet50 was second-best in B5 at 0.82664 despite
+  # using the older class weight, so combine it with the new 1.15 setting.
+  run_train "B6_resnet50_cls2w115_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.15 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50
+else
+  echo "Skipping B6 queue (RUN_B6=${RUN_B6})."
+fi
+
+if [[ "${RUN_B6}" == "1" ]]; then
+  eval_b_runs "B_curated_test_tta_B6" "${DATA_B_CURATED}" "flips" "B6_*"
+  eval_b_runs "B_curated_test_notta_B6" "${DATA_B_CURATED}" "none" "B6_*"
+fi
+
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
-  eval_b_runs "B_original_test_tta_reference_B5" "${DATA_B}" "flips" "B5_*"
+  if [[ "${RUN_B6}" == "1" ]]; then
+    eval_b_runs "B_original_test_tta_reference_B6" "${DATA_B}" "flips" "B6_*"
+  fi
+  if [[ "${RUN_NIGHT}" == "1" ]]; then
+    eval_b_runs "B_original_test_tta_reference_B5" "${DATA_B}" "flips" "B5_*"
+  fi
 else
   echo "Skipping raw B reference evaluation (RUN_REFERENCE_EVAL=${RUN_REFERENCE_EVAL})."
 fi
@@ -367,12 +465,12 @@ echo "============================================================"
 if (( ${#FAILED_TASKS[@]} > 0 )); then
   echo "Completed with ${#FAILED_TASKS[@]} failed task(s):"
   printf '  - %s\n' "${FAILED_TASKS[@]}"
-  echo "Inspect runs/logs/run_B5_*.log and runs/debug_eval/*_B5_history_eval.csv."
+  echo "Inspect runs/logs/run_B*.log and runs/debug_eval/*_B*_history_eval.csv."
   exit 1
 fi
 
-echo "All requested B5 overnight tasks completed successfully."
-echo "Primary metric: 4-class global Dice on B_curated_test_tta_B5."
-echo "Training logs: runs/logs/run_B5_*.log"
-echo "Run directories: runs/B5_*"
-echo "Evaluation outputs: runs/debug_eval/*_B5_history_eval.csv"
+echo "All requested B-only tasks completed successfully."
+echo "Primary metric: 4-class global Dice on the B curated test split."
+echo "B6 training logs: runs/logs/run_B6_*.log"
+echo "B6 run directories: runs/B6_*"
+echo "B6 evaluation outputs: runs/debug_eval/*_B6_history_eval.csv"
