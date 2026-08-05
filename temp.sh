@@ -9,11 +9,11 @@ set -uo pipefail
 #   B-only parameter exploration for the final model.
 #   - Target metric: 4-class global Dice. No class is ignored.
 #   - Train root: B group-clean train split.
-#   - Primary validation/test: B curated eval split.
+#   - Primary validation/test: class-complete, group-disjoint B curated split.
 #   - Original B evaluation is reference only because the raw split had leakage.
 #
-# Default: re-evaluate B4-B6 with sample-weighted metrics, then run the B8
-# native-resolution ROI/patch queue. Historical B4-B7 queues are disabled.
+# Default: re-evaluate existing B4-B8 checkpoints on the balanced v2 split.
+# No training queue runs unless its RUN_* switch is explicitly enabled.
 #   bash ../temp.sh
 #
 # Optional historical pilot groups:
@@ -27,7 +27,7 @@ set -uo pipefail
 mkdir -p runs/logs runs/debug_eval
 
 DATA_B="../data/385-liver.groupclean.v1"
-DATA_B_CURATED="../data/385-liver.groupclean.v1_curated_eval_20260802"
+DATA_B_CURATED="../data/385-liver.groupclean.v1_curated_eval_balanced_20260806"
 
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
 RUN_B="${RUN_B:-0}"
@@ -35,8 +35,9 @@ RUN_EXTRA="${RUN_EXTRA:-0}"
 RUN_NIGHT="${RUN_NIGHT:-0}"
 RUN_B6="${RUN_B6:-0}"
 RUN_B7="${RUN_B7:-0}"
-RUN_ROI_PATCH="${RUN_ROI_PATCH:-1}"
-RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-1}"
+RUN_ROI_PATCH="${RUN_ROI_PATCH:-0}"
+RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
+RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-4}"
 
@@ -190,6 +191,16 @@ eval_b_runs() {
     FAILED_TASKS+=("eval_${label}:exit_${rc}")
   fi
 }
+
+if [[ "${RUN_BALANCED_HISTORY_EVAL}" == "1" ]]; then
+  # Establish a class-complete comparison table before any further search.
+  # Keep threshold fixed at 0.5; never tune thresholds on the test split.
+  eval_b_runs "B_balanced_v2_test_tta_B4_B8" "${DATA_B_CURATED}" "flips" "B[45678]_*"
+  eval_b_runs "B_balanced_v2_test_notta_B4_B8" "${DATA_B_CURATED}" "none" "B[45678]_*"
+  eval_b_runs "B_balanced_v2_valid_tta_B4_B8" "${DATA_B_CURATED}" "flips" "B[45678]_*" "0.5" "valid"
+else
+  echo "Skipping balanced v2 B4-B8 history evaluation."
+fi
 
 if [[ "${RUN_B}" == "1" ]]; then
   # B1: primary anchor. This reuses the historically strongest recipe, but

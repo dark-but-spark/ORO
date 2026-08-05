@@ -1,0 +1,115 @@
+{
+  "created_at": "2026-08-06T01:47:53",
+  "source_root": "D:\\project\\ORO\\data\\385-liver.groupclean.v1_curated_eval_20260802",
+  "output_root": "D:\\project\\ORO\\data\\385-liver.groupclean.v1_curated_eval_balanced_20260806",
+  "copy_mode": "hardlink",
+  "target_test_fraction": 0.48,
+  "requested_test_groups_per_class": {
+    "0": 2,
+    "1": 7,
+    "2": 3,
+    "3": 4
+  },
+  "source_images": 91,
+  "source_groups": 33,
+  "selection_details": {
+    "0": {
+      "available_groups": 3,
+      "test_groups": 2,
+      "test_group_ids": [
+        "16_224_604_92_6_jpg",
+        "18_228_Masson_505_87_27_jpg"
+      ],
+      "test_pixel_fraction": 0.6192694161314625,
+      "test_image_fraction": 0.6666666666666666
+    },
+    "1": {
+      "available_groups": 14,
+      "test_groups": 7,
+      "test_group_ids": [
+        "15_242_208_18_24_jpg",
+        "15_242_208_19_25_jpg",
+        "15_242_208_20_4_jpg",
+        "15_242_208_23_14_jpg",
+        "15_242_208_25_4_jpg",
+        "15_242_208_26_14_jpg",
+        "15_242_208_27_11_jpg"
+      ],
+      "test_pixel_fraction": 0.4802098703632816,
+      "test_image_fraction": 0.4857142857142857
+    },
+    "2": {
+      "available_groups": 7,
+      "test_groups": 3,
+      "test_group_ids": [
+        "15_239_101_64_46_jpg",
+        "15_239_101_65_46_jpg",
+        "16_224_603_157_55_jpg"
+      ],
+      "test_pixel_fraction": 0.4794599896508314,
+      "test_image_fraction": 0.42857142857142855
+    },
+    "3": {
+      "available_groups": 9,
+      "test_groups": 4,
+      "test_group_ids": [
+        "119_2_2_21_jpg",
+        "201_0_13_63_jpg",
+        "201_1_13_42_jpg",
+        "201_7_4_56_jpg"
+      ],
+      "test_pixel_fraction": 0.47974076342110633,
+      "test_image_fraction": 0.46153846153846156
+    }
+  },
+  "split_stats": {
+    "valid": {
+      "groups": 17,
+      "images": 47,
+      "class_group_counts": [
+        1,
+        7,
+        4,
+        5
+      ],
+      "class_positive_image_counts": [
+        3,
+        18,
+        12,
+        14
+      ],
+      "class_positive_pixel_counts": [
+        110678,
+        1429860,
+        202197,
+        999110
+      ]
+    },
+    "test": {
+      "groups": 16,
+      "images": 44,
+      "class_group_counts": [
+        2,
+        7,
+        3,
+        4
+      ],
+      "class_positive_image_counts": [
+        6,
+        17,
+        9,
+        12
+      ],
+      "class_positive_pixel_counts": [
+        180021,
+        1320981,
+        186240,
+        921298
+      ]
+    }
+  },
+  "valid_test_group_overlap": [],
+  "copy_modes": {
+    "hardlink": 273
+  }
+}
