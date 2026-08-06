@@ -20,6 +20,7 @@ set -uo pipefail
 #   RUN_B=1 bash ../temp.sh
 #   RUN_EXTRA=1 bash ../temp.sh
 #   RUN_NIGHT=1 RUN_B6=0 bash ../temp.sh
+#   RUN_B9=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -36,6 +37,7 @@ RUN_NIGHT="${RUN_NIGHT:-0}"
 RUN_B6="${RUN_B6:-0}"
 RUN_B7="${RUN_B7:-0}"
 RUN_ROI_PATCH="${RUN_ROI_PATCH:-0}"
+RUN_B9="${RUN_B9:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -674,6 +676,96 @@ if [[ "${RUN_ROI_PATCH}" == "1" ]]; then
     threshold_label="${threshold/./p}"
     eval_b_runs "B_curated_valid_tta_B8_roi_thr${threshold_label}" "${DATA_B_CURATED}" "flips" "B8_*" "${threshold}" "valid"
   done
+fi
+
+if [[ "${RUN_B9}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B9 balanced-v2 queue.
+  # Current balanced-v2 TTA leader: B6_cls2w105_os20_seed42, Dice=0.838671.
+  # Main weakness remains class 2 (about 0.77-0.79 Dice in the best runs).
+  # These jobs do not run test automatically; rank them on balanced-v2 valid,
+  # then run one locked test evaluation for the shortlisted recipe.
+  # -------------------------------------------------------------------------
+
+  # Direction 1: reproduce the balanced-v2 leader across new seeds.
+  run_train "B9_cls2w105_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B9_cls2w105_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B9_cls2w105_os20_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # Direction 2: class-2 local pressure.  The 1.10 run had the best class-2
+  # Dice among the top balanced-v2 models, while global Dice stayed close.
+  run_train "B9_cls2w110_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.10 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B9_cls2w110_os20_dice04_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.10 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --bce-weight 0.6 --dice-weight 0.4 \
+    --no-test-after-training
+
+  # Direction 3: slightly more class-2 exposure, but avoid the older heavy
+  # oversampling range that did not clearly improve global Dice.
+  run_train "B9_cls2w105_os24_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.4 \
+    --no-test-after-training
+
+  # Direction 4: ROI/context follow-up.  ROI448 is close to the whole-image
+  # leader, so verify one new seed and one class-2-targeted variant.
+  run_train "B9_roi448_pos075_all_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 12 \
+    --train-patch-size 448 \
+    --patch-positive-probability 0.75 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none \
+    --no-test-after-training
+
+  run_train "B9_roi448_pos085_cls2_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --train-patch-size 448 \
+    --patch-positive-probability 0.85 \
+    --patch-class-indices 2 \
+    --patch-min-positive-pixels 32 \
+    --patch-center-jitter 0.20 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --val-tta none \
+    --no-test-after-training
+
+  # Direction 5: modest capacity check.  ResNet50 is worth one more run with
+  # the balanced-v2 leader's lower class-2 weight, but this is not the main bet.
+  run_train "B9_resnet50_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50 \
+    --no-test-after-training
+
+  eval_b_runs "B_balanced_v2_valid_tta_B9_thr0p45" "${DATA_B_CURATED}" "flips" "B9_*" "0.45" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B9_thr0p50" "${DATA_B_CURATED}" "flips" "B9_*" "0.50" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B9_thr0p55" "${DATA_B_CURATED}" "flips" "B9_*" "0.55" "valid"
+else
+  echo "Skipping B9 balanced-v2 queue (RUN_B9=${RUN_B9})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
