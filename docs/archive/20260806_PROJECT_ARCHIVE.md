@@ -16,6 +16,8 @@ not used as promotion evidence.
 | Run entrypoint | `temp.sh` | Default evaluation-only run for B4-B8 on the balanced v2 split |
 | Split details | `docs/archive/20260806_B_curated_balanced_eval_v2.md` | Construction details, limitations, and immediate run command |
 | Latest result analysis | `docs/archive/20260806_B_balanced_v2_result_analysis_and_B9_plan.md` | Balanced-v2 B4-B8 results and the next B9 queue |
+| B9 result analysis | `docs/archive/20260806_B9_balanced_v2_result_analysis.md` | Latest B9 valid-only results and locked-test shortlist |
+| runsNew archive | `docs/archive/20260806_runsNew_archive.md` | Copied debug_eval/log artifacts and model-directory manifests |
 | This index | `docs/archive/20260806_PROJECT_ARCHIVE.md` | Project-level handoff and operating notes |
 
 The older curated split is kept at

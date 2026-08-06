@@ -21,6 +21,8 @@ set -uo pipefail
 #   RUN_EXTRA=1 bash ../temp.sh
 #   RUN_NIGHT=1 RUN_B6=0 bash ../temp.sh
 #   RUN_B9=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B9_LOCKED_TEST=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B10=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -38,6 +40,8 @@ RUN_B6="${RUN_B6:-0}"
 RUN_B7="${RUN_B7:-0}"
 RUN_ROI_PATCH="${RUN_ROI_PATCH:-0}"
 RUN_B9="${RUN_B9:-0}"
+RUN_B9_LOCKED_TEST="${RUN_B9_LOCKED_TEST:-0}"
+RUN_B10="${RUN_B10:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -766,6 +770,95 @@ if [[ "${RUN_B9}" == "1" ]]; then
   eval_b_runs "B_balanced_v2_valid_tta_B9_thr0p55" "${DATA_B_CURATED}" "flips" "B9_*" "0.55" "valid"
 else
   echo "Skipping B9 balanced-v2 queue (RUN_B9=${RUN_B9})."
+fi
+
+if [[ "${RUN_B9_LOCKED_TEST}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # One-time locked balanced-v2 test for candidates selected on valid only.
+  # Do not change these thresholds after looking at the test results, and do
+  # not reuse this switch for repeated test-guided tuning.
+  # -------------------------------------------------------------------------
+  eval_b_runs "B_balanced_v2_test_tta_B9_cls2w105_seed44_thr0p50_locked" \
+    "${DATA_B_CURATED}" "flips" "B9_cls2w105_os20_seed44_*" "0.50" "test"
+
+  eval_b_runs "B_balanced_v2_test_tta_B9_cls2w110_seed43_thr0p55_locked" \
+    "${DATA_B_CURATED}" "flips" "B9_cls2w110_os20_seed43_*" "0.55" "test"
+
+  eval_b_runs "B_balanced_v2_test_tta_B9_resnet50_seed42_thr0p45_locked" \
+    "${DATA_B_CURATED}" "flips" "B9_resnet50_cls2w105_os20_seed42_*" "0.45" "test"
+else
+  echo "Skipping one-time B9 locked test (RUN_B9_LOCKED_TEST=${RUN_B9_LOCKED_TEST})."
+fi
+
+if [[ "${RUN_B10}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B10 strengthening queue after B-data cleaning.
+  #
+  # B9 showed that wider class-2 weight/oversampling sweeps have saturated:
+  # os=2.4 and Dice weight=0.4 regressed, pure ROI hurt global context, and
+  # ordinary Focal was already weak in B5.  B10 therefore keeps the stable
+  # cls2w=1.05/os=2.0 anchor and tests only new, supported directions.
+  #
+  # All jobs stop at validation.  Rank on balanced-v2 valid first; test only a
+  # final pre-declared shortlist once.
+  # -------------------------------------------------------------------------
+
+  # Direction 1: retain more spatial detail than scale=0.75.  These two runs
+  # test whether small/class-2 structures were being lost by down-scaling.
+  run_train "B10_scale0875_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 12 \
+    --scale --scale-factor 0.875 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B10_fullres_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # Direction 2: do not let tiny residual regions trigger whole-image
+  # oversampling.  This emphasizes class-2 images with meaningful area while
+  # preserving the same effective oversampling factor.
+  run_train "B10_cls2w105_os20_minpix64_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --oversample-min-pixels 64 \
+    --no-test-after-training
+
+  run_train "B10_cls2w105_os20_minpix256_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --oversample-min-pixels 256 \
+    --no-test-after-training
+
+  # Direction 3: reduce augmentation pressure.  The cleaned B domain may
+  # benefit from preserving its real appearance instead of adding variation.
+  run_train "B10_cls2w105_os20_aug02_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 16 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --curriculum-max-aug-level 0.2 \
+    --no-test-after-training
+
+  # Direction 4: one stability check for the larger encoder.  The first
+  # ResNet50 B9 run had the best class-2 valid Dice but not the best global
+  # Dice; a second seed decides whether that signal is reproducible.
+  run_train "B10_resnet50_cls2w105_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50 \
+    --no-test-after-training
+
+  # Coarse valid-only threshold sweep.  Promote a candidate only if global
+  # Dice improves and no previously strong class collapses.
+  eval_b_runs "B_balanced_v2_valid_tta_B10_thr0p45" "${DATA_B_CURATED}" "flips" "B10_*" "0.45" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B10_thr0p50" "${DATA_B_CURATED}" "flips" "B10_*" "0.50" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B10_thr0p55" "${DATA_B_CURATED}" "flips" "B10_*" "0.55" "valid"
+else
+  echo "Skipping B10 strengthening queue (RUN_B10=${RUN_B10})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
