@@ -23,6 +23,7 @@ set -uo pipefail
 #   RUN_B9=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B9_LOCKED_TEST=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B10=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B11=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -42,6 +43,7 @@ RUN_ROI_PATCH="${RUN_ROI_PATCH:-0}"
 RUN_B9="${RUN_B9:-0}"
 RUN_B9_LOCKED_TEST="${RUN_B9_LOCKED_TEST:-0}"
 RUN_B10="${RUN_B10:-0}"
+RUN_B11="${RUN_B11:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -859,6 +861,73 @@ if [[ "${RUN_B10}" == "1" ]]; then
   eval_b_runs "B_balanced_v2_valid_tta_B10_thr0p55" "${DATA_B_CURATED}" "flips" "B10_*" "0.55" "valid"
 else
   echo "Skipping B10 strengthening queue (RUN_B10=${RUN_B10})."
+fi
+
+if [[ "${RUN_B11}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B11 valid-only queue after reading B10.
+  #
+  # B10 says the strongest new signal is full resolution:
+  # - B10_fullres improved class 2 clearly over the scale=0.75 seed42 anchor.
+  # - scale=0.875 helped less, so the next search should verify fullres across
+  #   seeds and only then decide whether to pay the compute cost.
+  # - minpix64/minpix256 and weak augmentation regressed; do not continue them.
+  # - ResNet50 is promising but not proven because its gain is seed/class0 heavy.
+  #
+  # All jobs stop at validation.  Promote by multi-seed mean, class-2 Dice, and
+  # worst-class stability.  Keep test locked until a small shortlist is fixed.
+  # -------------------------------------------------------------------------
+
+  # Direction 1: full-resolution ResNet34 seed stability.  This is the main
+  # B11 bet because B10_fullres raised class-2 Dice without code changes.
+  run_train "B11_fullres_resnet34_cls2w105_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 8 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B11_fullres_resnet34_cls2w105_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 8 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # Direction 2: larger encoder at full resolution.  If memory is tight, lower
+  # these two batch sizes from 6 to 4 before launching.
+  run_train "B11_fullres_resnet50_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 6 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50 \
+    --no-test-after-training
+
+  run_train "B11_fullres_resnet50_cls2w105_os20_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 6 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50 \
+    --no-test-after-training
+
+  # Direction 3: regularization check for fullres.  B10_fullres had a larger
+  # train-valid gap than the scale=0.75 anchor, so test weight decay before
+  # increasing model size further.
+  run_train "B11_fullres_resnet34_wd1e3_cls2w105_os20_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --weight-decay 1e-3 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # Direction 4: ResNet50 seed completion at the old scale.  This separates
+  # encoder benefit from the full-resolution benefit.
+  run_train "B11_scale075_resnet50_cls2w105_os20_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 12 \
+    --scale --scale-factor 0.75 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --encoder-name resnet50 \
+    --no-test-after-training
+
+  # Coarse valid-only threshold sweep.  Do not use test here.
+  eval_b_runs "B_balanced_v2_valid_tta_B11_thr0p45" "${DATA_B_CURATED}" "flips" "B11_*" "0.45" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B11_thr0p50" "${DATA_B_CURATED}" "flips" "B11_*" "0.50" "valid"
+  eval_b_runs "B_balanced_v2_valid_tta_B11_thr0p55" "${DATA_B_CURATED}" "flips" "B11_*" "0.55" "valid"
+else
+  echo "Skipping B11 post-B10 queue (RUN_B11=${RUN_B11})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then

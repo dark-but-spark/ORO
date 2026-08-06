@@ -1,5 +1,7 @@
 # runsNew archive note (2026-08-06)
 
+## B6/B8/B9 balanced-v2 archive
+
 Archive root:
 `D:\project\ORO\runsTemp\runsNew_archive_20260806_B6_B8_B9_balanced_v2_complete`
 
@@ -22,3 +24,22 @@ After archiving:
 Related result analysis:
 - `D:\project\ORO\docs\archive\20260806_B9_balanced_v2_result_analysis.md`
 
+## B10 validation sweep archive
+
+Archive root:
+`D:\project\ORO\runsTemp\runsNew_archive_20260806_B10_valid_sweep`
+
+This second archive contains the B10 follow-up sweep generated after the
+B6/B8/B9 archive was created.
+
+Archived content:
+- 6 B10 B-domain training runs covering input scale, full resolution,
+  class-2 minimum-positive-pixel sampling, augmentation strength, and a
+  ResNet-50 encoder comparison.
+- `debug_eval` validation evaluation outputs.
+- `logs` training and evaluation logs.
+- `ARCHIVE_NOTE.md` inside the archive directory.
+
+After the B10 archive:
+- `D:\project\ORO\runsNew` is empty.
+- The B10 archive contains 8 original entries plus the archive note.
