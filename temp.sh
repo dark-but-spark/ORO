@@ -24,6 +24,10 @@ set -uo pipefail
 #   RUN_B9_LOCKED_TEST=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B10=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B11=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B12=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B12_FINETUNE=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B11_ENSEMBLE=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B12_OVERNIGHT=1 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -44,10 +48,26 @@ RUN_B9="${RUN_B9:-0}"
 RUN_B9_LOCKED_TEST="${RUN_B9_LOCKED_TEST:-0}"
 RUN_B10="${RUN_B10:-0}"
 RUN_B11="${RUN_B11:-0}"
+RUN_B12="${RUN_B12:-0}"
+RUN_B12_FINETUNE="${RUN_B12_FINETUNE:-0}"
+RUN_B13="${RUN_B13:-0}"
+RUN_B11_ENSEMBLE="${RUN_B11_ENSEMBLE:-0}"
+RUN_B12_OVERNIGHT="${RUN_B12_OVERNIGHT:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-4}"
+
+# One-switch extended overnight queue: 20 training jobs plus broad valid-only
+# threshold/TTA evaluation and the existing B11 top-3 ensemble baseline.
+# Explicit RUN_* values remain available for shorter follow-up queues.
+if [[ "${RUN_B12_OVERNIGHT}" == "1" ]]; then
+  RUN_B12=1
+  RUN_B12_FINETUNE=1
+  RUN_B13=1
+  RUN_B11_ENSEMBLE=1
+  RUN_BALANCED_HISTORY_EVAL=0
+fi
 
 FAILED_TASKS=()
 
@@ -197,6 +217,80 @@ eval_b_runs() {
     local rc=$?
     echo "FAILED evaluation ${label} (exit ${rc}); continuing." >&2
     FAILED_TASKS+=("eval_${label}:exit_${rc}")
+  fi
+}
+
+eval_wide_valid_sweep() {
+  local family="$1"
+  local run_pattern="$2"
+  local threshold_spec
+  local label
+  local threshold
+
+  # Broad calibration range. Keep this on valid only; never use it to search
+  # thresholds on the locked test split.
+  for threshold_spec in \
+    "0p35:0.35" "0p40:0.40" "0p45:0.45" "0p50:0.50" \
+    "0p55:0.55" "0p60:0.60" "0p65:0.65"; do
+    label="${threshold_spec%%:*}"
+    threshold="${threshold_spec##*:}"
+    eval_b_runs "B_balanced_v2_valid_tta_${family}_thr${label}" \
+      "${DATA_B_CURATED}" "flips" "${run_pattern}" "${threshold}" "valid"
+  done
+
+  # Quantify whether flip TTA is actually helping instead of assuming it does.
+  eval_b_runs "B_balanced_v2_valid_notta_${family}_thr0p45" \
+    "${DATA_B_CURATED}" "none" "${run_pattern}" "0.45" "valid"
+  eval_b_runs "B_balanced_v2_valid_notta_${family}_thr0p50" \
+    "${DATA_B_CURATED}" "none" "${run_pattern}" "0.50" "valid"
+}
+
+latest_run_dir() {
+  local pattern="$1"
+  local matches=()
+  shopt -s nullglob
+  matches=(runs/${pattern})
+  shopt -u nullglob
+  if (( ${#matches[@]} == 0 )); then
+    return 1
+  fi
+  printf '%s\n' "${matches[$((${#matches[@]} - 1))]}"
+}
+
+eval_b_ensemble() {
+  local label="$1"
+  local threshold="$2"
+  shift 2
+  local run_args=()
+  local pattern
+  local run_dir
+
+  for pattern in "$@"; do
+    if ! run_dir="$(latest_run_dir "${pattern}")"; then
+      echo "Missing ensemble member matching runs/${pattern}" >&2
+      FAILED_TASKS+=("ensemble_${label}:missing_${pattern}")
+      return
+    fi
+    run_args+=(--run-dir "${run_dir}")
+  done
+
+  export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
+  if python scripts/evaluate_ensemble_on_split.py \
+    "${run_args[@]}" \
+    --img-dir "${DATA_B_CURATED}/valid/images" \
+    --mask-dir "${DATA_B_CURATED}/valid/masks" \
+    --output-json "runs/debug_eval/${label}.json" \
+    --device cuda \
+    --batch-size 2 \
+    --num-workers 4 \
+    --evaluation-scale 0.75 \
+    --thresholds "${threshold}" \
+    --tta flips; then
+    echo "Finished ensemble evaluation: ${label}"
+  else
+    local rc=$?
+    echo "FAILED ensemble ${label} (exit ${rc}); continuing." >&2
+    FAILED_TASKS+=("ensemble_${label}:exit_${rc}")
   fi
 }
 
@@ -928,6 +1022,241 @@ if [[ "${RUN_B11}" == "1" ]]; then
   eval_b_runs "B_balanced_v2_valid_tta_B11_thr0p55" "${DATA_B_CURATED}" "flips" "B11_*" "0.55" "valid"
 else
   echo "Skipping B11 post-B10 queue (RUN_B11=${RUN_B11})."
+fi
+
+if [[ "${RUN_B12}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B12 high-upside valid-only queue.
+  #
+  # Pure ROI previously lost global context. The new mixed mode keeps whole
+  # images in most samples and zooms a minority of class-2 ROI crops back to
+  # the same network input size. This makes whole/ROI tensors batch-compatible.
+  # Alternative decoders are isolated from ROI changes for clean attribution.
+  # -------------------------------------------------------------------------
+
+  run_train "B12_r50_s075_mixroi448_p020_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 10 \
+    --scale --scale-factor 0.75 \
+    --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 448 \
+    --patch-sampling-probability 0.20 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  run_train "B12_r50_s075_mixroi448_p035_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 10 \
+    --scale --scale-factor 0.75 \
+    --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 448 \
+    --patch-sampling-probability 0.35 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  run_train "B12_r50_s075_mixroi384_p025_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 10 \
+    --scale --scale-factor 0.75 \
+    --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 384 \
+    --patch-sampling-probability 0.25 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  run_train "B12_unetpp_r50_s075_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 8 \
+    --scale --scale-factor 0.75 \
+    --model-architecture smp_unetplusplus --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B12_deeplabv3p_r50_s075_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 10 \
+    --scale --scale-factor 0.75 \
+    --model-architecture smp_deeplabv3plus --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B12_r50_s0875_seed43" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 43 8 \
+    --scale --scale-factor 0.875 \
+    --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  eval_wide_valid_sweep "B12" "B12_*"
+else
+  echo "Skipping B12 high-upside queue (RUN_B12=${RUN_B12})."
+fi
+
+if [[ "${RUN_B13}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B13 broad exploration matrix. These runs extend the search axes that B11
+  # could not resolve: multi-seed stability, encoder/resolution interaction,
+  # ROI dose/size, decoder family, learning rate, and class-2 exposure.
+  # Every candidate is selected on curated valid only.
+  # -------------------------------------------------------------------------
+
+  # A. Complete the strongest scale=0.75 ResNet50 family across seeds.
+  run_train "B13_r50_s075_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 12 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B13_r50_s075_seed46" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 46 12 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # B. Complete scale=0.875 ResNet50 across seeds; this tests whether the
+  # larger encoder can use extra detail better than ResNet34 did in B10.
+  run_train "B13_r50_s0875_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B13_r50_s0875_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # C. Extend mixed-ROI dose and crop-size coverage beyond B12.
+  run_train "B13_r50_s075_mixroi448_p010_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 10 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 448 --patch-sampling-probability 0.10 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  run_train "B13_r50_s075_mixroi448_p030_seed46" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 46 10 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 448 --patch-sampling-probability 0.30 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  run_train "B13_r50_s075_mixroi512_p020_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 10 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --train-patch-size 512 --patch-sampling-probability 0.20 --patch-resize-to-full \
+    --patch-positive-probability 0.90 --patch-class-indices 2 \
+    --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+    --no-test-after-training
+
+  # D. Decoder comparison with the smaller encoder separates decoder gains
+  # from ResNet50 capacity gains already covered by B12.
+  run_train "B13_unetpp_r34_s075_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 10 \
+    --scale --scale-factor 0.75 \
+    --model-architecture smp_unetplusplus --encoder-name resnet34 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B13_deeplabv3p_r34_s075_seed44" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 44 12 \
+    --scale --scale-factor 0.75 \
+    --model-architecture smp_deeplabv3plus --encoder-name resnet34 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # E. Optimization range around the current 2e-5 anchor.
+  run_train "B13_r50_s075_lr1e5_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 12 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --learning-rate 1e-5 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  run_train "B13_r50_s075_lr3e5_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 12 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --learning-rate 3e-5 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 2.0 \
+    --no-test-after-training
+
+  # F. Fill the gap between no extra exposure and os=2.0; os=2.4 already
+  # regressed in B9, so the useful unexplored direction is lower, not higher.
+  run_train "B13_r50_s075_os175_seed45" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 45 12 \
+    --scale --scale-factor 0.75 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 \
+    --oversample-class-indices 2 --oversample-factor 1.75 \
+    --no-test-after-training
+
+  eval_wide_valid_sweep "B13" "B13_*"
+else
+  echo "Skipping B13 broad exploration queue (RUN_B13=${RUN_B13})."
+fi
+
+if [[ "${RUN_B12_FINETUNE}" == "1" ]]; then
+  # Stage 2: preserve the best scale=0.75 ResNet50 solution and expose it to a
+  # small proportion of zoomed class-2 ROI views at a 4x lower learning rate.
+  if B11_R50_ANCHOR="$(latest_run_dir 'B11_scale075_resnet50_cls2w105_os20_seed43_*')"; then
+    B11_R50_CHECKPOINT="${B11_R50_ANCHOR}/models/best_model.pth"
+
+    run_train "B12ft_r50_s075_mixroi448_p020_seed46" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 46 10 \
+      --scale --scale-factor 0.75 \
+      --model-architecture smp_unet --encoder-name resnet50 --encoder-weights none \
+      --init-checkpoint "${B11_R50_CHECKPOINT}" \
+      --epochs 80 --learning-rate 5e-6 --lr-cosine-t-max 60 \
+      --early-stopping-min-epochs 30 --early-stopping-patience 20 \
+      --augmentation-curriculum none \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 448 \
+      --patch-sampling-probability 0.20 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+
+    run_train "B12ft_r50_s075_mixroi384_p030_seed47" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 47 10 \
+      --scale --scale-factor 0.75 \
+      --model-architecture smp_unet --encoder-name resnet50 --encoder-weights none \
+      --init-checkpoint "${B11_R50_CHECKPOINT}" \
+      --epochs 80 --learning-rate 5e-6 --lr-cosine-t-max 60 \
+      --early-stopping-min-epochs 30 --early-stopping-patience 20 \
+      --augmentation-curriculum none \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 384 \
+      --patch-sampling-probability 0.30 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+
+    eval_wide_valid_sweep "B12ft" "B12ft_*"
+  else
+    echo "Missing B11 scale0.75 ResNet50 seed43 anchor for B12 fine-tuning." >&2
+    FAILED_TASKS+=("B12_finetune:missing_anchor")
+  fi
+else
+  echo "Skipping B12 second-stage fine-tuning (RUN_B12_FINETUNE=${RUN_B12_FINETUNE})."
+fi
+
+if [[ "${RUN_B11_ENSEMBLE}" == "1" ]]; then
+  # Exact, pre-declared valid ensemble. Never point this block at the locked test.
+  eval_b_ensemble "B_balanced_v2_valid_B11_top3_ensemble_thr0p45" "0.45" \
+    "B11_scale075_resnet50_cls2w105_os20_seed43_*" \
+    "B10_resnet50_cls2w105_os20_seed44_*" \
+    "B11_fullres_resnet34_cls2w105_os20_seed44_*"
+  eval_b_ensemble "B_balanced_v2_valid_B11_top3_ensemble_thr0p50" "0.50" \
+    "B11_scale075_resnet50_cls2w105_os20_seed43_*" \
+    "B10_resnet50_cls2w105_os20_seed44_*" \
+    "B11_fullres_resnet34_cls2w105_os20_seed44_*"
+else
+  echo "Skipping B11 ensemble evaluation (RUN_B11_ENSEMBLE=${RUN_B11_ENSEMBLE})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then

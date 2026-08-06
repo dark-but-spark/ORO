@@ -59,7 +59,11 @@ def parse_args():
         default=None,
         help="Override checkpoint config encoder_weights for model construction, e.g. none to avoid downloads.",
     )
-    parser.add_argument("--default-model-architecture", default="smp_unet", choices=["multiresunet", "smp_unet"])
+    parser.add_argument(
+        "--default-model-architecture",
+        default="smp_unet",
+        choices=["multiresunet", "smp_unet", "smp_unetplusplus", "smp_deeplabv3plus"],
+    )
     parser.add_argument("--default-encoder-name", default="resnet34")
     parser.add_argument("--default-encoder-weights", default="imagenet")
     parser.add_argument("--dry-run", action="store_true", help="Only list discovered checkpoints.")

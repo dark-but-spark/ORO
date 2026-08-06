@@ -58,6 +58,7 @@ class SegmentationDataset(Dataset):
                  apply_augmentation=True, augmentation_strength='mild',
                  strong_aug_prob=0.0, strong_aug_strength='strong',
                  augmentation_schedule_level=0.0, patch_size=0,
+                 patch_sampling_probability=1.0, patch_resize_to_full=False,
                  patch_positive_probability=0.75, patch_class_indices=None,
                  patch_min_positive_pixels=1, patch_center_jitter=0.25):
         """
@@ -79,6 +80,8 @@ class SegmentationDataset(Dataset):
             strong_aug_strength (str, optional): Strong-side profile used for augmentation mixing
             augmentation_schedule_level (float, optional): Interpolation level from augmentation_strength to strong_aug_strength
             patch_size (int, optional): Native-resolution square training patch size. 0 disables patch sampling
+            patch_sampling_probability (float): Probability of using a patch instead of the whole image
+            patch_resize_to_full (bool): Resize sampled patches to the whole-image network input size
             patch_positive_probability (float): Probability that a patch is centered near a positive mask pixel
             patch_class_indices (list[int], optional): Channels eligible for positive-centered patch sampling
             patch_min_positive_pixels (int): Minimum channel pixels required before it can drive positive sampling
@@ -98,6 +101,8 @@ class SegmentationDataset(Dataset):
         self.strong_aug_strength = strong_aug_strength
         self.augmentation_schedule_level = max(0.0, min(1.0, float(augmentation_schedule_level)))
         self.patch_size = max(0, int(patch_size or 0))
+        self.patch_sampling_probability = max(0.0, min(1.0, float(patch_sampling_probability)))
+        self.patch_resize_to_full = bool(patch_resize_to_full)
         self.patch_positive_probability = max(0.0, min(1.0, float(patch_positive_probability)))
         self.patch_class_indices = None if patch_class_indices is None else [int(idx) for idx in patch_class_indices]
         self.patch_min_positive_pixels = max(1, int(patch_min_positive_pixels))
@@ -135,6 +140,8 @@ class SegmentationDataset(Dataset):
             print(f"  Native-resolution patch sampling: {self.patch_size}x{self.patch_size}")
             print(f"  Positive patch probability: {self.patch_positive_probability:.2f}, classes={patch_classes}, "
                   f"min_pixels={self.patch_min_positive_pixels}, center_jitter={self.patch_center_jitter:.2f}")
+            print(f"  Patch/whole-image mix: patch_probability={self.patch_sampling_probability:.2f}, "
+                  f"resize_patch_to_full={self.patch_resize_to_full}")
         print(f"  Augmentation: {'Enabled' if apply_augmentation else 'Disabled'}")
         if apply_augmentation:
             print(f"  Augmentation strength: {augmentation_strength}")
@@ -437,16 +444,26 @@ class SegmentationDataset(Dataset):
         mask = mask.astype(np.float32)
 
         # Training-only ROI/patch sampling is performed at native resolution.
-        # Validation and test datasets leave patch_size=0 and remain whole-image.
-        if self.patch_size > 0:
+        # A probability below 1 mixes ROI views with whole-image views. When
+        # patch_resize_to_full is enabled, both paths keep identical tensor
+        # dimensions and can therefore share the same mini-batch.
+        full_h, full_w = img.shape[:2]
+        use_patch = self.patch_size > 0 and random.random() < self.patch_sampling_probability
+        if use_patch:
             img, mask = self._extract_training_patch(img, mask)
         
-        # Scale if enabled - BEFORE augmentations
-        if self.scale:
-            # Calculate new dimensions based on scale factor
-            h, w = img.shape[0], img.shape[1]
-            new_w = int(w * self.scale_factor)
-            new_h = int(h * self.scale_factor)
+        # Scale if enabled - BEFORE augmentations. Mixed ROI views can instead
+        # be zoomed back to the whole-image input dimensions, preserving local
+        # detail without changing the batch shape.
+        if self.scale or (use_patch and self.patch_resize_to_full):
+            if use_patch and self.patch_resize_to_full:
+                target_scale = self.scale_factor if self.scale else 1.0
+                new_w = int(full_w * target_scale)
+                new_h = int(full_h * target_scale)
+            else:
+                h, w = img.shape[0], img.shape[1]
+                new_w = int(w * self.scale_factor)
+                new_h = int(h * self.scale_factor)
             
             # Validate dimensions are reasonable
             if new_w <= 0 or new_h <= 0:
@@ -563,6 +580,7 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    augmentation_schedule_level=0.0,
                    oversample_class_indices=None, oversample_factor=1.0,
                    oversample_min_pixels=1, train_patch_size=0,
+                   patch_sampling_probability=1.0, patch_resize_to_full=False,
                    patch_positive_probability=0.75, patch_class_indices=None,
                    patch_min_positive_pixels=1, patch_center_jitter=0.25):
     """Create training and validation datasets without loading all data into memory.
@@ -663,6 +681,8 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
         strong_aug_strength=strong_aug_strength,
         augmentation_schedule_level=augmentation_schedule_level,
         patch_size=train_patch_size,
+        patch_sampling_probability=patch_sampling_probability,
+        patch_resize_to_full=patch_resize_to_full,
         patch_positive_probability=patch_positive_probability,
         patch_class_indices=patch_class_indices,
         patch_min_positive_pixels=patch_min_positive_pixels,
@@ -700,6 +720,7 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
                           strong_aug_strength='strong', augmentation_schedule_level=0.0,
                           oversample_class_indices=None, oversample_factor=1.0,
                           oversample_min_pixels=1, seed=42, train_patch_size=0,
+                          patch_sampling_probability=1.0, patch_resize_to_full=False,
                           patch_positive_probability=0.75, patch_class_indices=None,
                           patch_min_positive_pixels=1, patch_center_jitter=0.25):
     """Create datasets from explicit train and validation directories."""
@@ -749,6 +770,8 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
         strong_aug_strength=strong_aug_strength,
         augmentation_schedule_level=augmentation_schedule_level,
         patch_size=train_patch_size,
+        patch_sampling_probability=patch_sampling_probability,
+        patch_resize_to_full=patch_resize_to_full,
         patch_positive_probability=patch_positive_probability,
         patch_class_indices=patch_class_indices,
         patch_min_positive_pixels=patch_min_positive_pixels,

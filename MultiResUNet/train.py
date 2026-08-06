@@ -201,6 +201,8 @@ def _save_split_manifest(args, train_dataset=None, val_dataset=None, test_datase
         "seed": args.seed,
         "train_patch": {
             "size": args.train_patch_size,
+            "sampling_probability": args.patch_sampling_probability,
+            "resize_to_full": args.patch_resize_to_full,
             "positive_probability": args.patch_positive_probability,
             "class_indices": args.patch_class_indices,
             "min_positive_pixels": args.patch_min_positive_pixels,
@@ -390,29 +392,52 @@ def create_model(args):
             dropout_rate=args.dropout_rate
         )
         model_name = 'MultiResUNet'
-    elif args.model_architecture == 'smp_unet':
+    elif args.model_architecture in ('smp_unet', 'smp_unetplusplus', 'smp_deeplabv3plus'):
         try:
             import segmentation_models_pytorch as smp
         except ImportError:
             raise ImportError(
-                "segmentation_models_pytorch is required for --model-architecture smp_unet. "
+                "segmentation_models_pytorch is required for SMP model architectures. "
                 "Install it on the server with: pip install segmentation-models-pytorch"
             )
         encoder_weights = args.encoder_weights
         if encoder_weights is not None and encoder_weights.lower() in ('none', 'null', 'false'):
             encoder_weights = None
-        model = smp.Unet(
+        model_classes = {
+            'smp_unet': (smp.Unet, 'SMP-Unet'),
+            'smp_unetplusplus': (smp.UnetPlusPlus, 'SMP-UnetPlusPlus'),
+            'smp_deeplabv3plus': (smp.DeepLabV3Plus, 'SMP-DeepLabV3Plus'),
+        }
+        model_class, architecture_name = model_classes[args.model_architecture]
+        model = model_class(
             encoder_name=args.encoder_name,
             encoder_weights=encoder_weights,
             in_channels=args.input_channels,
             classes=args.output_channels,
             activation=None
         )
-        model_name = f"SMP-Unet({args.encoder_name}, weights={encoder_weights})"
+        model_name = f"{architecture_name}({args.encoder_name}, weights={encoder_weights})"
     else:
         raise ValueError(f"Unsupported model architecture: {args.model_architecture}")
 
     return model, model_name
+
+
+def load_initial_checkpoint(model, checkpoint_path, device):
+    """Warm-start a model from an exact state dict without restoring optimizer state."""
+    if not checkpoint_path:
+        return
+    path = Path(checkpoint_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Initial checkpoint not found: {path}")
+    try:
+        state = torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        state = torch.load(path, map_location=device)
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    model.load_state_dict(state, strict=True)
+    print(f"Warm-started model weights from: {path}")
 
 
 def check_memory_usage():
@@ -612,6 +637,10 @@ def parse_args():
                         help='Scale factor for images (default: 0.5). E.g., 0.5 reduces to 50%%, 1.5 increases to 150%%')
     parser.add_argument('--train-patch-size', type=int, default=0,
                         help='Native-resolution square patches for training only; 0 keeps whole images (default: 0)')
+    parser.add_argument('--patch-sampling-probability', type=float, default=1.0,
+                        help='Probability of sampling a patch instead of a whole image; use 0.2-0.4 for mixed ROI training (default: 1.0)')
+    parser.add_argument('--patch-resize-to-full', action='store_true',
+                        help='Resize sampled patches to the whole-image input size so ROI and whole-image views can share a batch')
     parser.add_argument('--patch-positive-probability', type=float, default=0.75,
                         help='Probability of centering a training patch near a positive mask pixel (default: 0.75)')
     parser.add_argument('--patch-class-indices', type=int, nargs='+', default=None,
@@ -627,12 +656,14 @@ def parse_args():
     parser.add_argument('--output-channels', type=int, default=4,
                         help='Number of output segmentation channels (default: 4)')
     parser.add_argument('--model-architecture', type=str, default='multiresunet',
-                        choices=['multiresunet', 'smp_unet'],
-                        help='Model architecture: existing multiresunet or optional segmentation_models_pytorch Unet')
+                        choices=['multiresunet', 'smp_unet', 'smp_unetplusplus', 'smp_deeplabv3plus'],
+                        help='Model architecture: MultiResUNet or an SMP Unet/Unet++/DeepLabV3+ decoder')
     parser.add_argument('--encoder-name', type=str, default='resnet34',
-                        help='SMP encoder name when --model-architecture smp_unet (default: resnet34)')
+                        help='Encoder name for SMP architectures (default: resnet34)')
     parser.add_argument('--encoder-weights', type=str, default='imagenet',
-                        help='SMP encoder weights, e.g. imagenet or None. Only used by smp_unet (default: imagenet)')
+                        help='SMP encoder weights, e.g. imagenet or None (default: imagenet)')
+    parser.add_argument('--init-checkpoint', type=str, default=None,
+                        help='Optional model state dict used to warm-start a second-stage fine-tuning run')
     
     # Training hyperparameters
     parser.add_argument('--epochs', type=int, default=50,
@@ -793,6 +824,10 @@ def main():
         raise ValueError("--train-patch-size must be 0 or a positive multiple of 32")
     if not 0.0 <= args.patch_positive_probability <= 1.0:
         raise ValueError("--patch-positive-probability must be between 0 and 1")
+    if not 0.0 <= args.patch_sampling_probability <= 1.0:
+        raise ValueError("--patch-sampling-probability must be between 0 and 1")
+    if args.patch_resize_to_full and args.train_patch_size <= 0:
+        raise ValueError("--patch-resize-to-full requires --train-patch-size > 0")
     if not 0.0 <= args.patch_center_jitter <= 0.5:
         raise ValueError("--patch-center-jitter must be between 0 and 0.5")
     if args.eval_batch_size is not None and args.eval_batch_size <= 0:
@@ -828,6 +863,8 @@ def main():
         print(f"Scale Factor: {args.scale_factor} ({args.scale_factor*100:.0f}%)")
     print(f"Train Patch Size: {args.train_patch_size if args.train_patch_size > 0 else 'Disabled'}")
     if args.train_patch_size > 0:
+        print(f"Patch Sampling Probability: {args.patch_sampling_probability}")
+        print(f"Patch Resize To Full Input: {args.patch_resize_to_full}")
         print(f"Patch Positive Probability: {args.patch_positive_probability}")
         print(f"Patch Classes: {args.patch_class_indices if args.patch_class_indices is not None else 'All'}")
         print(f"Patch Min Positive Pixels: {args.patch_min_positive_pixels}")
@@ -835,7 +872,7 @@ def main():
     print(f"Input Channels: {args.input_channels}")
     print(f"Output Channels: {args.output_channels}")
     print(f"Model Architecture: {args.model_architecture}")
-    if args.model_architecture == 'smp_unet':
+    if args.model_architecture.startswith('smp_'):
         print(f"Encoder: {args.encoder_name}, weights={args.encoder_weights}")
     print(f"Epochs: {args.epochs}")
     print(f"Batch Size: {args.batch_size}")
@@ -987,6 +1024,8 @@ def main():
                 oversample_min_pixels=args.oversample_min_pixels,
                 seed=args.seed,
                 train_patch_size=args.train_patch_size,
+                patch_sampling_probability=args.patch_sampling_probability,
+                patch_resize_to_full=args.patch_resize_to_full,
                 patch_positive_probability=args.patch_positive_probability,
                 patch_class_indices=args.patch_class_indices,
                 patch_min_positive_pixels=args.patch_min_positive_pixels,
@@ -1012,6 +1051,8 @@ def main():
                 oversample_factor=args.oversample_factor,
                 oversample_min_pixels=args.oversample_min_pixels,
                 train_patch_size=args.train_patch_size,
+                patch_sampling_probability=args.patch_sampling_probability,
+                patch_resize_to_full=args.patch_resize_to_full,
                 patch_positive_probability=args.patch_positive_probability,
                 patch_class_indices=args.patch_class_indices,
                 patch_min_positive_pixels=args.patch_min_positive_pixels,
@@ -1054,6 +1095,7 @@ def main():
         print(f"\nInitializing model...")
         model, model_name = create_model(args)
         model = model.to(device)
+        load_initial_checkpoint(model, args.init_checkpoint, device)
         
         print(f"Model architecture: {model_name}")
         print(f"  Input: {args.input_channels} channels")
@@ -1090,10 +1132,13 @@ def main():
             model_architecture=args.model_architecture,
             encoder_name=args.encoder_name,
             encoder_weights=args.encoder_weights,
+            init_checkpoint=args.init_checkpoint,
             train_augmentation=args.train_augmentation,
             val_augmentation=args.val_augmentation,
             repeat_factor=args.repeat_factor,
             train_patch_size=args.train_patch_size,
+            patch_sampling_probability=args.patch_sampling_probability,
+            patch_resize_to_full=args.patch_resize_to_full,
             patch_positive_probability=args.patch_positive_probability,
             patch_class_indices=args.patch_class_indices,
             patch_min_positive_pixels=args.patch_min_positive_pixels,
@@ -1167,6 +1212,7 @@ def main():
         print(f"\nInitializing model...")
         model, model_name = create_model(args)
         model = model.to(device)
+        load_initial_checkpoint(model, args.init_checkpoint, device)
         
         print(f"Model architecture: {model_name}")
         print(f"  Input: {args.input_channels} channels")
@@ -1211,6 +1257,7 @@ def main():
             model_architecture=args.model_architecture,
             encoder_name=args.encoder_name,
             encoder_weights=args.encoder_weights,
+            init_checkpoint=args.init_checkpoint,
             train_augmentation=False,
             val_augmentation=False,
             repeat_factor=1,
