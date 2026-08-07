@@ -28,6 +28,7 @@ set -uo pipefail
 #   RUN_B12_FINETUNE=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B11_ENSEMBLE=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B12_OVERNIGHT=1 bash ../temp.sh
+#   RUN_B14_HALFDAY=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -53,6 +54,7 @@ RUN_B12_FINETUNE="${RUN_B12_FINETUNE:-0}"
 RUN_B13="${RUN_B13:-0}"
 RUN_B11_ENSEMBLE="${RUN_B11_ENSEMBLE:-0}"
 RUN_B12_OVERNIGHT="${RUN_B12_OVERNIGHT:-0}"
+RUN_B14_HALFDAY="${RUN_B14_HALFDAY:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -243,6 +245,29 @@ eval_wide_valid_sweep() {
     "${DATA_B_CURATED}" "none" "${run_pattern}" "0.45" "valid"
   eval_b_runs "B_balanced_v2_valid_notta_${family}_thr0p50" \
     "${DATA_B_CURATED}" "none" "${run_pattern}" "0.50" "valid"
+}
+
+eval_fine_valid_sweep() {
+  local family="$1"
+  local run_pattern="$2"
+  local threshold_spec
+  local label
+  local threshold
+
+  # Fine calibration around the useful range found by B12/B13.
+  for threshold_spec in \
+    "0p400:0.400" "0p425:0.425" "0p450:0.450" \
+    "0p475:0.475" "0p500:0.500" "0p525:0.525"; do
+    label="${threshold_spec%%:*}"
+    threshold="${threshold_spec##*:}"
+    eval_b_runs "B_balanced_v2_valid_tta_${family}_thr${label}" \
+      "${DATA_B_CURATED}" "flips" "${run_pattern}" "${threshold}" "valid"
+  done
+
+  eval_b_runs "B_balanced_v2_valid_notta_${family}_thr0p450" \
+    "${DATA_B_CURATED}" "none" "${run_pattern}" "0.450" "valid"
+  eval_b_runs "B_balanced_v2_valid_notta_${family}_thr0p500" \
+    "${DATA_B_CURATED}" "none" "${run_pattern}" "0.500" "valid"
 }
 
 latest_run_dir() {
@@ -1257,6 +1282,95 @@ if [[ "${RUN_B11_ENSEMBLE}" == "1" ]]; then
     "B11_fullres_resnet34_cls2w105_os20_seed44_*"
 else
   echo "Skipping B11 ensemble evaluation (RUN_B11_ENSEMBLE=${RUN_B11_ENSEMBLE})."
+fi
+
+if [[ "${RUN_B14_HALFDAY}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B14 focused half-day queue after B12/B13.
+  #
+  # Evidence used:
+  # - ROI512/p=0.20 improved the same-seed scale=0.75 anchor by ~0.0105.
+  # - scale=0.875 improved the ResNet50 multi-seed mean by ~0.005.
+  # - short warm-start fine-tuning improved the old B11 anchor within 6 epochs.
+  # This queue exploits those signals and does not revisit failed decoders,
+  # small ROI crops, low LR=1e-5, or aggressive class weighting.
+  # -------------------------------------------------------------------------
+
+  # Direction A (highest upside): combine scale=0.875 with ROI512/p=0.20.
+  for seed in 42 43 45; do
+    run_train "B14_r50_s0875_mixroi512_p020_seed${seed}" \
+      "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" "${seed}" 8 \
+      --scale --scale-factor 0.875 \
+      --model-architecture smp_unet --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 512 \
+      --patch-sampling-probability 0.20 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+  done
+
+  # Direction B: replicate the current ROI512 leader across independent seeds.
+  for seed in 42 43 44; do
+    run_train "B14_r50_s075_mixroi512_p020_seed${seed}" \
+      "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" "${seed}" 10 \
+      --scale --scale-factor 0.75 \
+      --model-architecture smp_unet --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 512 \
+      --patch-sampling-probability 0.20 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+  done
+
+  # Direction C: short stage-2 fine-tuning from the B13 ROI512 leader.
+  if B13_ROI512_ANCHOR="$(latest_run_dir 'B13_r50_s075_mixroi512_p020_seed45_*')"; then
+    B13_ROI512_CHECKPOINT="${B13_ROI512_ANCHOR}/models/best_model.pth"
+
+    run_train "B14ft_roi512_p010_lr3e6_seed48" \
+      "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 48 10 \
+      --scale --scale-factor 0.75 \
+      --model-architecture smp_unet --encoder-name resnet50 --encoder-weights none \
+      --init-checkpoint "${B13_ROI512_CHECKPOINT}" \
+      --epochs 40 --learning-rate 3e-6 --lr-cosine-t-max 30 \
+      --early-stopping-min-epochs 10 --early-stopping-patience 12 \
+      --augmentation-curriculum none \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 512 \
+      --patch-sampling-probability 0.10 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+
+    run_train "B14ft_roi512_p015_lr3e6_seed49" \
+      "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 49 10 \
+      --scale --scale-factor 0.75 \
+      --model-architecture smp_unet --encoder-name resnet50 --encoder-weights none \
+      --init-checkpoint "${B13_ROI512_CHECKPOINT}" \
+      --epochs 40 --learning-rate 3e-6 --lr-cosine-t-max 30 \
+      --early-stopping-min-epochs 10 --early-stopping-patience 12 \
+      --augmentation-curriculum none \
+      --class-weights 1 1 1.05 1 \
+      --oversample-class-indices 2 --oversample-factor 2.0 \
+      --train-patch-size 512 \
+      --patch-sampling-probability 0.15 --patch-resize-to-full \
+      --patch-positive-probability 0.90 --patch-class-indices 2 \
+      --patch-min-positive-pixels 64 --patch-center-jitter 0.15 \
+      --no-test-after-training
+  else
+    echo "Missing B13 ROI512 seed45 anchor; skipping the two B14 fine-tuning jobs." >&2
+    FAILED_TASKS+=("B14_finetune:missing_B13_ROI512_anchor")
+  fi
+
+  # Fine valid-only threshold calibration and an explicit no-TTA comparison.
+  eval_fine_valid_sweep "B14" "B14_r50_*"
+  eval_fine_valid_sweep "B14ft" "B14ft_*"
+else
+  echo "Skipping B14 focused half-day queue (RUN_B14_HALFDAY=${RUN_B14_HALFDAY})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
