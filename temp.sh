@@ -30,6 +30,8 @@ set -uo pipefail
 #   RUN_B12_OVERNIGHT=1 bash ../temp.sh
 #   RUN_B14_HALFDAY=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B15=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B16_4H=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_ALL_HISTORY_METRICS=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -57,6 +59,8 @@ RUN_B11_ENSEMBLE="${RUN_B11_ENSEMBLE:-0}"
 RUN_B12_OVERNIGHT="${RUN_B12_OVERNIGHT:-0}"
 RUN_B14_HALFDAY="${RUN_B14_HALFDAY:-0}"
 RUN_B15="${RUN_B15:-0}"
+RUN_B16_4H="${RUN_B16_4H:-0}"
+RUN_ALL_HISTORY_METRICS="${RUN_ALL_HISTORY_METRICS:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -71,6 +75,12 @@ if [[ "${RUN_B12_OVERNIGHT}" == "1" ]]; then
   RUN_B13=1
   RUN_B11_ENSEMBLE=1
   RUN_BALANCED_HISTORY_EVAL=0
+fi
+
+# A B16 run always finishes by rebuilding the comparable all-history metric
+# table with the newly trained checkpoints included.
+if [[ "${RUN_B16_4H}" == "1" ]]; then
+  RUN_ALL_HISTORY_METRICS=1
 fi
 
 FAILED_TASKS=()
@@ -1482,6 +1492,76 @@ if [[ "${RUN_B15}" == "1" ]]; then
   fi
 else
   echo "Skipping B15 structural-loss queue (RUN_B15=${RUN_B15})."
+fi
+
+if [[ "${RUN_B16_4H}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B16: bounded four-hour follow-up to B15.
+  # B15 showed that class-2 boundary loss=0.05 is the only isolated change
+  # that improved the four-class valid Dice. First verify it on two new seeds,
+  # then test only the two closest structural variants. Locked test is not used.
+  # -------------------------------------------------------------------------
+  for seed in 43 44; do
+    run_train "B16_s0875_boundary005_seed${seed}" \
+      "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" "${seed}" 8 \
+      --scale --scale-factor 0.875 --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+      --boundary-loss-weight 0.05 --boundary-class-index 2 --boundary-kernel-size 3 \
+      --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+  done
+
+  run_train "B16_s0875_boundary0025_seed42" \
+    "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --boundary-loss-weight 0.025 --boundary-class-index 2 --boundary-kernel-size 3 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  run_train "B16_s0875_boundary005_k5_seed42" \
+    "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --boundary-loss-weight 0.05 --boundary-class-index 2 --boundary-kernel-size 5 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  # Valid-only calibration. This includes the new precision/recall and area
+  # fraction MAE fields, which are more relevant to later area quantification.
+  eval_fine_valid_sweep "B16" "B16_*"
+
+  # Equal-weight seed ensemble measures whether variance reduction is useful.
+  # It deliberately uses only the exact boundary=0.05 recipe, not tuned variants.
+  if B16_S42="$(latest_run_dir 'B15_s0875_boundary005_seed42_*')" && \
+     B16_S43="$(latest_run_dir 'B16_s0875_boundary005_seed43_*')" && \
+     B16_S44="$(latest_run_dir 'B16_s0875_boundary005_seed44_*')"; then
+    export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
+    if python scripts/evaluate_ensemble_on_split.py \
+      --run-dir "${B16_S42}" --run-dir "${B16_S43}" --run-dir "${B16_S44}" \
+      --thresholds 0.425 --evaluation-scale 0.875 --tta flips \
+      --img-dir "${DATA_B_CURATED}/valid/images" \
+      --mask-dir "${DATA_B_CURATED}/valid/masks" \
+      --output-json "runs/debug_eval/B16_valid_boundary005_seed_ensemble.json" \
+      --device cuda --batch-size 2 --num-workers 4; then
+      echo "Finished B16 boundary seed ensemble."
+    else
+      FAILED_TASKS+=("B16_seed_ensemble:exit_$?")
+    fi
+  else
+    echo "Missing a B15/B16 boundary=0.05 seed model; skipping B16 ensemble." >&2
+    FAILED_TASKS+=("B16_seed_ensemble:missing_anchor")
+  fi
+else
+  echo "Skipping B16 four-hour queue (RUN_B16_4H=${RUN_B16_4H})."
+fi
+
+if [[ "${RUN_ALL_HISTORY_METRICS}" == "1" ]]; then
+  # One fixed, valid-only operating point for every historical B checkpoint.
+  # The resulting CSV has global Dice/IoU plus flattened per-class Dice, IoU,
+  # precision, recall and area-fraction MAE columns. B16 has its own fine
+  # threshold sweep above; keeping this table at 0.5 makes model comparison fair.
+  eval_b_runs "B_all_history_valid_tta_thr0p500" \
+    "${DATA_B_CURATED}" "flips" "B*" "0.500" "valid"
+else
+  echo "Skipping all-history metric collection (RUN_ALL_HISTORY_METRICS=${RUN_ALL_HISTORY_METRICS})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then

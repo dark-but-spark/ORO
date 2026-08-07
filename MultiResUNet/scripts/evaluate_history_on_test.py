@@ -48,7 +48,13 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--tta", default="none", choices=["none", "flips"])
-    parser.add_argument("--metric-ignore-classes", type=int, nargs="*", default=[2])
+    parser.add_argument(
+        "--metric-ignore-classes",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Optional class indices excluded only from the additional ignore-class aggregate; default keeps all classes.",
+    )
     parser.add_argument("--scale", action="store_true", default=None, help="Override checkpoint config scale=True.")
     parser.add_argument("--no-scale", action="store_false", dest="scale", help="Override checkpoint config scale=False.")
     parser.add_argument("--scale-factor", type=float, default=None, help="Override checkpoint config scale_factor.")
@@ -150,6 +156,7 @@ def evaluate(model, loader, device, output_channels, threshold=0.5, tta="none", 
     class_intersection_sum = None
     class_true_sum = None
     class_pred_sum = None
+    class_area_abs_error_sum = None
     batches = 0
     samples = 0
 
@@ -168,9 +175,16 @@ def evaluate(model, loader, device, output_channels, threshold=0.5, tta="none", 
             class_intersection = (targets_by_class * preds_by_class).sum(dim=(0, 2)).detach().cpu()
             class_true = targets_by_class.sum(dim=(0, 2)).detach().cpu()
             class_pred = preds_by_class.sum(dim=(0, 2)).detach().cpu()
+            class_area_abs_error = (
+                targets_by_class.mean(dim=2) - preds_by_class.mean(dim=2)
+            ).abs().sum(dim=0).detach().cpu()
             class_intersection_sum = class_intersection if class_intersection_sum is None else class_intersection_sum + class_intersection
             class_true_sum = class_true if class_true_sum is None else class_true_sum + class_true
             class_pred_sum = class_pred if class_pred_sum is None else class_pred_sum + class_pred
+            class_area_abs_error_sum = (
+                class_area_abs_error if class_area_abs_error_sum is None
+                else class_area_abs_error_sum + class_area_abs_error
+            )
 
             if keep_classes and len(keep_classes) != output_channels:
                 totals["dice_ignore_classes"] += dice_coef(targets[:, keep_classes], preds[:, keep_classes]).item() * batch_samples
@@ -184,14 +198,29 @@ def evaluate(model, loader, device, output_channels, threshold=0.5, tta="none", 
     smooth = 1e-6
     class_dice = (2.0 * class_intersection_sum + smooth) / (class_true_sum + class_pred_sum + smooth)
     class_jaccard = (class_intersection_sum + smooth) / (class_true_sum + class_pred_sum - class_intersection_sum + smooth)
+    class_precision = (class_intersection_sum + smooth) / (class_pred_sum + smooth)
+    class_recall = (class_intersection_sum + smooth) / (class_true_sum + smooth)
     result = {
         "test_dice": totals["dice"] / samples,
         "test_jaccard": totals["jaccard"] / samples,
         "test_class_dice": class_dice.tolist(),
         "test_class_jaccard": class_jaccard.tolist(),
+        "test_class_precision": class_precision.tolist(),
+        "test_class_recall": class_recall.tolist(),
+        "test_class_area_fraction_mae": (class_area_abs_error_sum / samples).tolist(),
         "test_batches": batches,
         "metric_samples": samples,
     }
+    # Keep the compact arrays for JSON compatibility and also flatten every
+    # class into CSV-friendly columns for direct sorting and comparison.
+    for class_index in range(output_channels):
+        result[f"test_class_{class_index}_dice"] = float(class_dice[class_index])
+        result[f"test_class_{class_index}_jaccard"] = float(class_jaccard[class_index])
+        result[f"test_class_{class_index}_precision"] = float(class_precision[class_index])
+        result[f"test_class_{class_index}_recall"] = float(class_recall[class_index])
+        result[f"test_class_{class_index}_area_fraction_mae"] = float(
+            class_area_abs_error_sum[class_index] / samples
+        )
     if keep_classes and len(keep_classes) != output_channels:
         result["metric_ignore_classes"] = ignore_classes
         result["test_dice_ignore_classes"] = totals["dice_ignore_classes"] / samples

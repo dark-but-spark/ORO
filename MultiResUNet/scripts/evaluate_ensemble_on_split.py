@@ -171,6 +171,7 @@ def evaluate(members, loader, device, output_channels, thresholds, evaluation_sc
     class_intersection_sum = torch.zeros(output_channels, dtype=torch.float64)
     class_true_sum = torch.zeros(output_channels, dtype=torch.float64)
     class_pred_sum = torch.zeros(output_channels, dtype=torch.float64)
+    class_area_abs_error_sum = torch.zeros(output_channels, dtype=torch.float64)
     samples = 0
     batches = 0
 
@@ -220,6 +221,10 @@ def evaluate(members, loader, device, output_channels, thresholds, evaluation_sc
             class_intersection_sum += (targets_by_class * preds_by_class).sum(dim=(0, 2)).cpu().double()
             class_true_sum += targets_by_class.sum(dim=(0, 2)).cpu().double()
             class_pred_sum += preds_by_class.sum(dim=(0, 2)).cpu().double()
+            class_area_abs_error_sum += (
+                eval_targets.reshape(batch_samples, output_channels, -1).mean(dim=2)
+                - preds.reshape(batch_samples, output_channels, -1).mean(dim=2)
+            ).abs().sum(dim=0).cpu().double()
             samples += batch_samples
             batches += 1
 
@@ -230,11 +235,16 @@ def evaluate(members, loader, device, output_channels, thresholds, evaluation_sc
     class_jaccard = (class_intersection_sum + smooth) / (
         class_true_sum + class_pred_sum - class_intersection_sum + smooth
     )
+    class_precision = (class_intersection_sum + smooth) / (class_pred_sum + smooth)
+    class_recall = (class_intersection_sum + smooth) / (class_true_sum + smooth)
     return {
         "dice": total_dice / samples,
         "jaccard": total_jaccard / samples,
         "class_dice": class_dice.tolist(),
         "class_jaccard": class_jaccard.tolist(),
+        "class_precision": class_precision.tolist(),
+        "class_recall": class_recall.tolist(),
+        "class_area_fraction_mae": (class_area_abs_error_sum / samples).tolist(),
         "thresholds": thresholds,
         "evaluation_scale": evaluation_scale,
         "tta": tta,
