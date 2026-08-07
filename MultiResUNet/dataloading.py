@@ -1,5 +1,6 @@
 import os
 import random
+import json
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -580,6 +581,7 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
                    augmentation_schedule_level=0.0,
                    oversample_class_indices=None, oversample_factor=1.0,
                    oversample_min_pixels=1, train_patch_size=0,
+                   hard_sample_manifest=None, hard_sample_factor=1.0,
                    patch_sampling_probability=1.0, patch_resize_to_full=False,
                    patch_positive_probability=0.75, patch_class_indices=None,
                    patch_min_positive_pixels=1, patch_center_jitter=0.25):
@@ -640,6 +642,13 @@ def create_datasets(img_dir='data/imgs', mask_dir='data/masks',
     val_img_files = img_files[n_train:]
     val_mask_files = mask_files[n_train:]
     original_n_train = len(train_img_files)
+
+    if hard_sample_manifest and hard_sample_factor > 1.0:
+        train_img_files, train_mask_files, hard_matched = oversample_training_files_by_hard_manifest(
+            train_img_files, train_mask_files, hard_sample_manifest, hard_sample_factor, seed
+        )
+        print(f"Hard-sample oversampling: manifest={hard_sample_manifest}, factor={hard_sample_factor}, "
+              f"matched={hard_matched}, samples={len(train_img_files)}")
 
     if oversample_class_indices and oversample_factor and oversample_factor > 1.0:
         train_img_files, train_mask_files, matched = oversample_training_files_by_mask_class(
@@ -720,6 +729,7 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
                           strong_aug_strength='strong', augmentation_schedule_level=0.0,
                           oversample_class_indices=None, oversample_factor=1.0,
                           oversample_min_pixels=1, seed=42, train_patch_size=0,
+                          hard_sample_manifest=None, hard_sample_factor=1.0,
                           patch_sampling_probability=1.0, patch_resize_to_full=False,
                           patch_positive_probability=0.75, patch_class_indices=None,
                           patch_min_positive_pixels=1, patch_center_jitter=0.25):
@@ -731,6 +741,13 @@ def create_fixed_datasets(train_img_dir='data/train/images', train_mask_dir='dat
         val_img_dir, val_mask_dir, limit=limit
     )
     original_n_train = len(train_img_files)
+
+    if hard_sample_manifest and hard_sample_factor > 1.0:
+        train_img_files, train_mask_files, hard_matched = oversample_training_files_by_hard_manifest(
+            train_img_files, train_mask_files, hard_sample_manifest, hard_sample_factor, seed
+        )
+        print(f"Hard-sample oversampling: manifest={hard_sample_manifest}, factor={hard_sample_factor}, "
+              f"matched={hard_matched}, samples={len(train_img_files)}")
 
     if oversample_class_indices and oversample_factor and oversample_factor > 1.0:
         train_img_files, train_mask_files, matched = oversample_training_files_by_mask_class(
@@ -874,6 +891,41 @@ def oversample_training_files_by_mask_class(img_files, mask_files, mask_dir,
     rng.shuffle(combined_pairs)
     out_img_files, out_mask_files = zip(*combined_pairs)
     return list(out_img_files), list(out_mask_files), len(matched_pairs)
+
+
+def oversample_training_files_by_hard_manifest(img_files, mask_files, manifest_path,
+                                                factor=1.0, seed=42):
+    """Duplicate exact training samples selected by an error-mining manifest."""
+    if factor <= 1.0:
+        return img_files, mask_files, 0
+    with open(manifest_path, 'r', encoding='utf-8') as manifest_file:
+        manifest = json.load(manifest_file)
+    selected_stems = set(manifest.get('selected_stems', []))
+    if not selected_stems:
+        raise ValueError(f"Hard-sample manifest has no selected_stems: {manifest_path}")
+    matched_pairs = [
+        (img_file, mask_file)
+        for img_file, mask_file in zip(img_files, mask_files)
+        if os.path.splitext(img_file)[0] in selected_stems
+    ]
+    if not matched_pairs:
+        raise ValueError(f"No training filenames matched hard-sample manifest: {manifest_path}")
+
+    rng = random.Random(seed)
+    duplicate_pairs = []
+    whole_repeats = int(factor) - 1
+    fractional_repeat = factor - int(factor)
+    for _ in range(max(0, whole_repeats)):
+        duplicate_pairs.extend(matched_pairs)
+    if fractional_repeat > 0:
+        partial_count = int(round(len(matched_pairs) * fractional_repeat))
+        shuffled = matched_pairs[:]
+        rng.shuffle(shuffled)
+        duplicate_pairs.extend(shuffled[:partial_count])
+    combined = list(zip(img_files, mask_files)) + duplicate_pairs
+    rng.shuffle(combined)
+    out_images, out_masks = zip(*combined)
+    return list(out_images), list(out_masks), len(matched_pairs)
 
 
 def split_data(X, Y, validation=0.1, random_state=42):

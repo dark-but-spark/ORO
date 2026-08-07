@@ -56,6 +56,19 @@ def parse_args():
         help="Optional non-negative model weights; defaults to equal averaging.",
     )
     parser.add_argument(
+        "--class-model-weights",
+        action="append",
+        default=[],
+        help="Per-class weights for one model as comma-separated values; repeat in --run-dir order.",
+    )
+    parser.add_argument(
+        "--inference-scales",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional absolute input scales averaged for every model, e.g. 0.75 0.875 1.0.",
+    )
+    parser.add_argument(
         "--evaluation-scale",
         type=float,
         default=0.75,
@@ -87,7 +100,7 @@ def _resize(tensor, size, mode):
     return F.interpolate(tensor, size=size, mode=mode, align_corners=False)
 
 
-def load_ensemble(run_dirs, device, weights):
+def load_ensemble(run_dirs, device, weights, class_model_weights):
     members = []
     construction_args = _construction_args()
     for value in run_dirs:
@@ -121,13 +134,32 @@ def load_ensemble(run_dirs, device, weights):
         weights = [1.0] * len(members)
     if len(weights) != len(members) or any(weight < 0 for weight in weights) or sum(weights) <= 0:
         raise ValueError("--weights must contain one non-negative value per --run-dir and sum to > 0")
-    weight_sum = float(sum(weights))
-    for member, weight in zip(members, weights):
-        member["weight"] = float(weight) / weight_sum
+    if class_model_weights:
+        if len(class_model_weights) != len(members):
+            raise ValueError("Repeat --class-model-weights once per --run-dir")
+        parsed = []
+        for value in class_model_weights:
+            row = [float(item) for item in value.split(",")]
+            if len(row) != next(iter(output_channels)) or any(item < 0 for item in row):
+                raise ValueError("Each --class-model-weights row needs one non-negative value per class")
+            parsed.append(row)
+        per_class_totals = [sum(row[class_idx] for row in parsed) for class_idx in range(len(parsed[0]))]
+        if any(total <= 0 for total in per_class_totals):
+            raise ValueError("Per-class model weights must sum to > 0 for every class")
+        for member, row in zip(members, parsed):
+            member["class_weights"] = [
+                row[class_idx] / per_class_totals[class_idx] for class_idx in range(len(row))
+            ]
+            member["weight"] = None
+    else:
+        weight_sum = float(sum(weights))
+        for member, weight in zip(members, weights):
+            member["weight"] = float(weight) / weight_sum
+            member["class_weights"] = None
     return members, output_channels.pop()
 
 
-def evaluate(members, loader, device, output_channels, thresholds, evaluation_scale, tta):
+def evaluate(members, loader, device, output_channels, thresholds, evaluation_scale, tta, inference_scales=None):
     if len(thresholds) == 1:
         thresholds = thresholds * output_channels
     if len(thresholds) != output_channels or any(not 0.0 <= value <= 1.0 for value in thresholds):
@@ -157,13 +189,26 @@ def evaluate(members, loader, device, output_channels, thresholds, evaluation_sc
             )
 
             for member in members:
-                input_size = (
-                    max(1, int(native_h * member["input_scale"])),
-                    max(1, int(native_w * member["input_scale"])),
-                )
-                model_images = _resize(images, input_size, "bicubic")
-                probs = predict_prob_with_tta(member["model"], model_images, tta)
-                ensemble_probs.add_(_resize(probs, eval_size, "bilinear"), alpha=member["weight"])
+                scales = inference_scales or [member["input_scale"]]
+                if any(scale <= 0 for scale in scales):
+                    raise ValueError("All --inference-scales values must be > 0")
+                if member["class_weights"] is None:
+                    model_weights = torch.full(
+                        (1, output_channels, 1, 1), member["weight"], device=device, dtype=images.dtype
+                    )
+                else:
+                    model_weights = torch.tensor(
+                        member["class_weights"], device=device, dtype=images.dtype
+                    ).view(1, output_channels, 1, 1)
+                for input_scale in scales:
+                    input_size = (
+                        max(1, int(native_h * input_scale)),
+                        max(1, int(native_w * input_scale)),
+                    )
+                    model_images = _resize(images, input_size, "bicubic")
+                    probs = predict_prob_with_tta(member["model"], model_images, tta)
+                    resized_probs = _resize(probs, eval_size, "bilinear")
+                    ensemble_probs += resized_probs * model_weights / len(scales)
 
             preds = (ensemble_probs >= threshold_tensor).float()
             batch_samples = targets.size(0)
@@ -193,6 +238,7 @@ def evaluate(members, loader, device, output_channels, thresholds, evaluation_sc
         "thresholds": thresholds,
         "evaluation_scale": evaluation_scale,
         "tta": tta,
+        "inference_scales": inference_scales,
         "samples": samples,
         "batches": batches,
     }
@@ -203,7 +249,9 @@ def main():
     if args.evaluation_scale <= 0:
         raise ValueError("--evaluation-scale must be > 0")
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
-    members, output_channels = load_ensemble(args.run_dir, device, args.weights)
+    members, output_channels = load_ensemble(
+        args.run_dir, device, args.weights, args.class_model_weights
+    )
     dataset = create_single_dataset(
         img_dir=args.img_dir,
         mask_dir=args.mask_dir,
@@ -225,6 +273,7 @@ def main():
         args.thresholds,
         args.evaluation_scale,
         args.tta,
+        args.inference_scales,
     )
     metrics["members"] = [
         {key: value for key, value in member.items() if key != "model"}

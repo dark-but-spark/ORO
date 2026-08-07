@@ -766,12 +766,25 @@ def parse_args():
                         help='Weight for Dice loss in combined loss (default: 0.5)')
     parser.add_argument('--class-weights', type=float, nargs='+', default=None,
                         help='Optional per-output-channel loss weights, e.g. --class-weights 1 1 2 1')
+    parser.add_argument('--tversky-weight', type=float, default=0.0,
+                        help='Auxiliary class-specific Tversky loss weight (default: 0, disabled)')
+    parser.add_argument('--tversky-class-index', type=int, default=2)
+    parser.add_argument('--tversky-alpha', type=float, default=0.3)
+    parser.add_argument('--tversky-beta', type=float, default=0.7)
+    parser.add_argument('--boundary-loss-weight', type=float, default=0.0,
+                        help='Auxiliary class-specific boundary Dice loss weight (default: 0, disabled)')
+    parser.add_argument('--boundary-class-index', type=int, default=2)
+    parser.add_argument('--boundary-kernel-size', type=int, default=3)
     parser.add_argument('--oversample-class-indices', type=int, nargs='+', default=None,
                         help='Optional mask channel indices to oversample in the training split, e.g. --oversample-class-indices 2')
     parser.add_argument('--oversample-factor', type=float, default=1.0,
                         help='Effective repeat factor for samples containing oversample classes. 1.0 disables it (default: 1.0)')
     parser.add_argument('--oversample-min-pixels', type=int, default=1,
                         help='Minimum positive pixels in a selected class channel to oversample a sample (default: 1)')
+    parser.add_argument('--hard-sample-manifest', type=str, default=None,
+                        help='JSON manifest produced by build_hard_sample_manifest.py')
+    parser.add_argument('--hard-sample-factor', type=float, default=1.0,
+                        help='Repeat factor for manifest-selected hard training samples (default: 1.0)')
     
     # Regularization parameters
     parser.add_argument('--dropout-rate', type=float, default=0.2,
@@ -842,6 +855,19 @@ def main():
                 f"--patch-class-indices contains invalid values {invalid_patch_classes}; "
                 f"valid range is 0..{args.output_channels - 1}"
             )
+    if args.tversky_weight < 0 or args.boundary_loss_weight < 0:
+        raise ValueError("Auxiliary loss weights must be non-negative")
+    for name, index in (("tversky", args.tversky_class_index), ("boundary", args.boundary_class_index)):
+        if not 0 <= index < args.output_channels:
+            raise ValueError(f"--{name}-class-index must be within the output channel range")
+    if args.tversky_alpha < 0 or args.tversky_beta < 0 or args.tversky_alpha + args.tversky_beta <= 0:
+        raise ValueError("Tversky alpha/beta must be non-negative and sum to > 0")
+    if args.boundary_kernel_size < 3 or args.boundary_kernel_size % 2 == 0:
+        raise ValueError("--boundary-kernel-size must be an odd integer >= 3")
+    if args.hard_sample_factor < 1.0:
+        raise ValueError("--hard-sample-factor must be >= 1.0")
+    if args.hard_sample_factor > 1.0 and not args.hard_sample_manifest:
+        raise ValueError("--hard-sample-factor > 1 requires --hard-sample-manifest")
     
     # Print configuration
     print("=" * 60)
@@ -1022,6 +1048,8 @@ def main():
                 oversample_class_indices=args.oversample_class_indices,
                 oversample_factor=args.oversample_factor,
                 oversample_min_pixels=args.oversample_min_pixels,
+                hard_sample_manifest=args.hard_sample_manifest,
+                hard_sample_factor=args.hard_sample_factor,
                 seed=args.seed,
                 train_patch_size=args.train_patch_size,
                 patch_sampling_probability=args.patch_sampling_probability,
@@ -1050,6 +1078,8 @@ def main():
                 oversample_class_indices=args.oversample_class_indices,
                 oversample_factor=args.oversample_factor,
                 oversample_min_pixels=args.oversample_min_pixels,
+                hard_sample_manifest=args.hard_sample_manifest,
+                hard_sample_factor=args.hard_sample_factor,
                 train_patch_size=args.train_patch_size,
                 patch_sampling_probability=args.patch_sampling_probability,
                 patch_resize_to_full=args.patch_resize_to_full,
@@ -1147,6 +1177,8 @@ def main():
             oversample_class_indices=args.oversample_class_indices,
             oversample_factor=args.oversample_factor,
             oversample_min_pixels=args.oversample_min_pixels,
+            hard_sample_manifest=args.hard_sample_manifest,
+            hard_sample_factor=args.hard_sample_factor,
             seed=args.seed,
             early_stopping_patience=args.early_stopping_patience,
             early_stopping_min_delta=args.early_stopping_min_delta,
@@ -1173,6 +1205,13 @@ def main():
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
             class_weights=args.class_weights,
+            tversky_weight=args.tversky_weight,
+            tversky_class_index=args.tversky_class_index,
+            tversky_alpha=args.tversky_alpha,
+            tversky_beta=args.tversky_beta,
+            boundary_weight=args.boundary_loss_weight,
+            boundary_class_index=args.boundary_class_index,
+            boundary_kernel_size=args.boundary_kernel_size,
             # Learning rate scheduler parameters
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,
@@ -1287,6 +1326,13 @@ def main():
             bce_weight=args.bce_weight,
             dice_weight=args.dice_weight,
             class_weights=args.class_weights,
+            tversky_weight=args.tversky_weight,
+            tversky_class_index=args.tversky_class_index,
+            tversky_alpha=args.tversky_alpha,
+            tversky_beta=args.tversky_beta,
+            boundary_weight=args.boundary_loss_weight,
+            boundary_class_index=args.boundary_class_index,
+            boundary_kernel_size=args.boundary_kernel_size,
             # Learning rate scheduler parameters
             lr_scheduler_type=args.lr_scheduler,
             lr_step_size=args.lr_step_size,

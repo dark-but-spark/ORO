@@ -166,6 +166,59 @@ class DiceLoss(nn.Module):
         return 1 - dice
 
 
+class TverskyLoss(nn.Module):
+    """Class-specific Tversky loss; beta > alpha emphasizes false negatives."""
+    def __init__(self, class_index=2, alpha=0.3, beta=0.7, smooth=1.0):
+        super().__init__()
+        self.class_index = int(class_index)
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self.smooth = float(smooth)
+
+    def forward(self, inputs, targets):
+        if not 0 <= self.class_index < inputs.size(1):
+            raise ValueError(f"Tversky class index {self.class_index} is invalid for {inputs.size(1)} channels")
+        probs = torch.sigmoid(inputs[:, self.class_index]).reshape(-1)
+        truth = targets[:, self.class_index].reshape(-1)
+        true_positive = (probs * truth).sum()
+        false_positive = (probs * (1 - truth)).sum()
+        false_negative = ((1 - probs) * truth).sum()
+        score = (true_positive + self.smooth) / (
+            true_positive + self.alpha * false_positive + self.beta * false_negative + self.smooth
+        )
+        return 1 - score
+
+
+class BoundaryDiceLoss(nn.Module):
+    """Differentiable boundary Dice loss for one output class."""
+    def __init__(self, class_index=2, kernel_size=3, smooth=1.0):
+        super().__init__()
+        if kernel_size < 3 or kernel_size % 2 == 0:
+            raise ValueError("boundary kernel size must be an odd integer >= 3")
+        self.class_index = int(class_index)
+        self.kernel_size = int(kernel_size)
+        self.smooth = float(smooth)
+
+    def _boundary(self, tensor):
+        padding = self.kernel_size // 2
+        dilated = F.max_pool2d(tensor, self.kernel_size, stride=1, padding=padding)
+        eroded = -F.max_pool2d(-tensor, self.kernel_size, stride=1, padding=padding)
+        return (dilated - eroded).clamp(0, 1)
+
+    def forward(self, inputs, targets):
+        if not 0 <= self.class_index < inputs.size(1):
+            raise ValueError(f"Boundary class index {self.class_index} is invalid for {inputs.size(1)} channels")
+        probs = torch.sigmoid(inputs[:, self.class_index:self.class_index + 1])
+        truth = targets[:, self.class_index:self.class_index + 1]
+        pred_boundary = self._boundary(probs).reshape(-1)
+        true_boundary = self._boundary(truth).reshape(-1)
+        intersection = (pred_boundary * true_boundary).sum()
+        dice = (2 * intersection + self.smooth) / (
+            pred_boundary.sum() + true_boundary.sum() + self.smooth
+        )
+        return 1 - dice
+
+
 class CombinedLoss(nn.Module):
     """
     Combined Loss (BCE/Focal + Dice) for balanced training
@@ -178,10 +231,14 @@ class CombinedLoss(nn.Module):
         gamma {float} -- Focal Loss gamma parameter (default: 2.0)
     """
     def __init__(self, bce_weight=0.5, dice_weight=0.5, use_focal=False, alpha=0.25, gamma=2.0,
-                 class_weights=None):
+                 class_weights=None, tversky_weight=0.0, tversky_class_index=2,
+                 tversky_alpha=0.3, tversky_beta=0.7, boundary_weight=0.0,
+                 boundary_class_index=2, boundary_kernel_size=3):
         super(CombinedLoss, self).__init__()
         self.bce_weight = bce_weight
         self.dice_weight = dice_weight
+        self.tversky_weight = float(tversky_weight)
+        self.boundary_weight = float(boundary_weight)
         
         if use_focal:
             self.bce_loss = FocalLoss(alpha=alpha, gamma=gamma, class_weights=class_weights)
@@ -189,11 +246,22 @@ class CombinedLoss(nn.Module):
             self.bce_loss = WeightedBCEWithLogitsLoss(class_weights=class_weights)
         
         self.dice_loss = DiceLoss(smooth=1.0, class_weights=class_weights)
+        self.tversky_loss = TverskyLoss(
+            class_index=tversky_class_index, alpha=tversky_alpha, beta=tversky_beta
+        ) if self.tversky_weight > 0 else None
+        self.boundary_loss = BoundaryDiceLoss(
+            class_index=boundary_class_index, kernel_size=boundary_kernel_size
+        ) if self.boundary_weight > 0 else None
     
     def forward(self, inputs, targets):
         bce = self.bce_loss(inputs, targets)
         dice = self.dice_loss(inputs, targets)
-        return self.bce_weight * bce + self.dice_weight * dice
+        loss = self.bce_weight * bce + self.dice_weight * dice
+        if self.tversky_loss is not None:
+            loss = loss + self.tversky_weight * self.tversky_loss(inputs, targets)
+        if self.boundary_loss is not None:
+            loss = loss + self.boundary_weight * self.boundary_loss(inputs, targets)
+        return loss
 
 
 class Conv2d_batchnorm(torch.nn.Module):
@@ -679,11 +747,14 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
               patch_class_indices=None, patch_min_positive_pixels=1,
               patch_center_jitter=0.25, eval_batch_size=None,
               oversample_class_indices=None, oversample_factor=1.0,
-              oversample_min_pixels=1, seed=42,
+              oversample_min_pixels=1, hard_sample_manifest=None,
+              hard_sample_factor=1.0, seed=42,
               # loss function configuration
               use_focal_loss=False, focal_alpha=0.25, focal_gamma=2.0,
               use_combined_loss=False, bce_weight=0.5, dice_weight=0.5,
-              class_weights=None,
+              class_weights=None, tversky_weight=0.0, tversky_class_index=2,
+              tversky_alpha=0.3, tversky_beta=0.7, boundary_weight=0.0,
+              boundary_class_index=2, boundary_kernel_size=3,
               # learning rate scheduler configuration
               lr_scheduler_type='cosine', lr_step_size=30, lr_gamma=0.1,
               lr_patience=10, lr_cosine_t_max=None,
@@ -830,8 +901,21 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
             use_focal=use_focal_loss,
             alpha=focal_alpha,
             gamma=focal_gamma,
-            class_weights=class_weights
+            class_weights=class_weights,
+            tversky_weight=tversky_weight,
+            tversky_class_index=tversky_class_index,
+            tversky_alpha=tversky_alpha,
+            tversky_beta=tversky_beta,
+            boundary_weight=boundary_weight,
+            boundary_class_index=boundary_class_index,
+            boundary_kernel_size=boundary_kernel_size,
         )
+        if tversky_weight > 0:
+            print(f"  Tversky auxiliary: weight={tversky_weight}, class={tversky_class_index}, "
+                  f"alpha={tversky_alpha}, beta={tversky_beta}")
+        if boundary_weight > 0:
+            print(f"  Boundary auxiliary: weight={boundary_weight}, class={boundary_class_index}, "
+                  f"kernel={boundary_kernel_size}")
     elif use_focal_loss:
         print(f"\nUsing Focal Loss (recommended for sparse/imbalanced datasets)")
         print(f"  Alpha: {focal_alpha}, Gamma: {focal_gamma}")
@@ -949,6 +1033,8 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'oversample_class_indices': oversample_class_indices if oversample_class_indices is not None else [],
         'oversample_factor': oversample_factor,
         'oversample_min_pixels': oversample_min_pixels,
+        'hard_sample_manifest': hard_sample_manifest if hard_sample_manifest is not None else '',
+        'hard_sample_factor': hard_sample_factor,
         'seed': seed,
         'use_focal_loss': use_focal_loss,
         'focal_alpha': focal_alpha,
@@ -957,6 +1043,13 @@ def trainStep(model, X_train=None, Y_train=None, X_val=None, Y_val=None,
         'bce_weight': bce_weight,
         'dice_weight': dice_weight,
         'class_weights': class_weights if class_weights is not None else [],
+        'tversky_weight': tversky_weight,
+        'tversky_class_index': tversky_class_index,
+        'tversky_alpha': tversky_alpha,
+        'tversky_beta': tversky_beta,
+        'boundary_weight': boundary_weight,
+        'boundary_class_index': boundary_class_index,
+        'boundary_kernel_size': boundary_kernel_size,
         'device': str(device),
         'param_count': param_count,
         'trainable_param_count': trainable_param_count,

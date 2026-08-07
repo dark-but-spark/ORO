@@ -29,6 +29,7 @@ set -uo pipefail
 #   RUN_B11_ENSEMBLE=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #   RUN_B12_OVERNIGHT=1 bash ../temp.sh
 #   RUN_B14_HALFDAY=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
+#   RUN_B15=1 RUN_BALANCED_HISTORY_EVAL=0 bash ../temp.sh
 #
 # Optional reference-only evaluation on raw B:
 #   RUN_REFERENCE_EVAL=1 bash ../temp.sh
@@ -55,6 +56,7 @@ RUN_B13="${RUN_B13:-0}"
 RUN_B11_ENSEMBLE="${RUN_B11_ENSEMBLE:-0}"
 RUN_B12_OVERNIGHT="${RUN_B12_OVERNIGHT:-0}"
 RUN_B14_HALFDAY="${RUN_B14_HALFDAY:-0}"
+RUN_B15="${RUN_B15:-0}"
 RUN_CORRECTED_HISTORY_EVAL="${RUN_CORRECTED_HISTORY_EVAL:-0}"
 RUN_BALANCED_HISTORY_EVAL="${RUN_BALANCED_HISTORY_EVAL:-1}"
 RUN_REFERENCE_EVAL="${RUN_REFERENCE_EVAL:-0}"
@@ -1371,6 +1373,115 @@ if [[ "${RUN_B14_HALFDAY}" == "1" ]]; then
   eval_fine_valid_sweep "B14ft" "B14ft_*"
 else
   echo "Skipping B14 focused half-day queue (RUN_B14_HALFDAY=${RUN_B14_HALFDAY})."
+fi
+
+if [[ "${RUN_B15}" == "1" ]]; then
+  # -------------------------------------------------------------------------
+  # B15: class-2 structural loss experiments on the stable scale=0.875
+  # ResNet50 recipe. No ROI is used. Each new loss is isolated before the
+  # combined run, then the combined candidate is repeated on seed43.
+  # -------------------------------------------------------------------------
+  B15_HARD_MANIFEST="runs/debug_eval/B15_class2_hard_train_top25.json"
+  if B15_HARD_SOURCE="$(latest_run_dir 'B13_r50_s075_mixroi512_p020_seed45_*')"; then
+    export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
+    if python scripts/build_hard_sample_manifest.py \
+      --run-dir "${B15_HARD_SOURCE}" \
+      --img-dir "${DATA_B}/train/images" --mask-dir "${DATA_B}/train/masks" \
+      --output-json "${B15_HARD_MANIFEST}" \
+      --class-index 2 --top-fraction 0.25 --threshold 0.45 --tta flips \
+      --device cuda --num-workers 4; then
+      echo "Finished B15 hard-sample mining."
+    else
+      rc=$?
+      FAILED_TASKS+=("B15_hard_manifest:exit_${rc}")
+    fi
+  else
+    echo "Missing B13 ROI512 source for hard-sample mining." >&2
+    FAILED_TASKS+=("B15_hard_manifest:missing_source")
+  fi
+
+  run_train "B15_s0875_tversky005_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --tversky-weight 0.05 --tversky-class-index 2 --tversky-alpha 0.3 --tversky-beta 0.7 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  run_train "B15_s0875_tversky010_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --tversky-weight 0.10 --tversky-class-index 2 --tversky-alpha 0.3 --tversky-beta 0.7 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  run_train "B15_s0875_boundary005_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --boundary-loss-weight 0.05 --boundary-class-index 2 --boundary-kernel-size 3 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  run_train "B15_s0875_boundary010_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+    --scale --scale-factor 0.875 --encoder-name resnet50 \
+    --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+    --boundary-loss-weight 0.10 --boundary-class-index 2 --boundary-kernel-size 3 \
+    --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+  for seed in 42 43; do
+    run_train "B15_s0875_tv005_bd005_seed${seed}" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" "${seed}" 8 \
+      --scale --scale-factor 0.875 --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 2.0 \
+      --tversky-weight 0.05 --tversky-class-index 2 --tversky-alpha 0.3 --tversky-beta 0.7 \
+      --boundary-loss-weight 0.05 --boundary-class-index 2 --boundary-kernel-size 3 \
+      --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+  done
+
+  if [[ -f "${B15_HARD_MANIFEST}" ]]; then
+    run_train "B15_s0875_hard15_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+      --scale --scale-factor 0.875 --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 1.0 \
+      --hard-sample-manifest "${B15_HARD_MANIFEST}" --hard-sample-factor 1.5 \
+      --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+
+    run_train "B15_s0875_hard15_tv005_bd005_seed42" "${DATA_B}" "${DATA_B_CURATED}" "${DATA_B_CURATED}" 42 8 \
+      --scale --scale-factor 0.875 --encoder-name resnet50 \
+      --class-weights 1 1 1.05 1 --oversample-class-indices 2 --oversample-factor 1.0 \
+      --hard-sample-manifest "${B15_HARD_MANIFEST}" --hard-sample-factor 1.5 \
+      --tversky-weight 0.05 --tversky-class-index 2 --tversky-alpha 0.3 --tversky-beta 0.7 \
+      --boundary-loss-weight 0.05 --boundary-class-index 2 --boundary-kernel-size 3 \
+      --early-stopping-min-epochs 60 --early-stopping-patience 20 --no-test-after-training
+  else
+    echo "Hard-sample manifest unavailable; skipping the two B15 hard-mining runs." >&2
+  fi
+
+  eval_fine_valid_sweep "B15" "B15_*"
+
+  # Existing complementary models: class-2 ROI leader, high-C0/C3 LR3e-5,
+  # and the stable scale=0.875 model. Evaluate class-specific model weights,
+  # class-specific thresholds, and absolute multi-scale TTA on valid only.
+  if B15_ROI="$(latest_run_dir 'B13_r50_s075_mixroi512_p020_seed45_*')" && \
+     B15_LR3="$(latest_run_dir 'B13_r50_s075_lr3e5_seed45_*')" && \
+     B15_S0875="$(latest_run_dir 'B12_r50_s0875_seed43_*')"; then
+    export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
+    if python scripts/evaluate_ensemble_on_split.py \
+      --run-dir "${B15_ROI}" --run-dir "${B15_LR3}" --run-dir "${B15_S0875}" \
+      --class-model-weights "0.20,0.20,0.60,0.20" \
+      --class-model-weights "0.50,0.30,0.15,0.50" \
+      --class-model-weights "0.30,0.50,0.25,0.30" \
+      --thresholds 0.40 0.50 0.425 0.50 \
+      --inference-scales 0.75 0.875 1.0 \
+      --evaluation-scale 0.875 --tta flips \
+      --img-dir "${DATA_B_CURATED}/valid/images" \
+      --mask-dir "${DATA_B_CURATED}/valid/masks" \
+      --output-json "runs/debug_eval/B15_valid_classweighted_multiscale_ensemble.json" \
+      --device cuda --batch-size 2 --num-workers 4; then
+      echo "Finished B15 class-weighted multi-scale ensemble."
+    else
+      FAILED_TASKS+=("B15_advanced_ensemble:exit_$?")
+    fi
+  else
+    echo "Missing one or more B13/B12 ensemble anchors; skipping B15 advanced ensemble." >&2
+    FAILED_TASKS+=("B15_advanced_ensemble:missing_anchor")
+  fi
+else
+  echo "Skipping B15 structural-loss queue (RUN_B15=${RUN_B15})."
 fi
 
 if [[ "${RUN_REFERENCE_EVAL}" == "1" ]]; then
